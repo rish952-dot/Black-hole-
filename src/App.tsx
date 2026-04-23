@@ -1,9 +1,7 @@
 import React, { useRef, useEffect, useState } from 'react';
-import { Settings, Zap, Maximize2, RefreshCw, Activity, Eye, Cpu, Database, Wind, Star, Camera, Box } from 'lucide-react';
+import { Settings, Info, Zap, Maximize2, RefreshCw, Layers, Activity, Eye, Cpu, Database, Share2, Binary, Wind, Star, Camera, Thermometer } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
-import { FourDPanel } from './FourDPanel';
-import { RESEARCH_PRESETS, CATEGORY_COLORS, CATEGORY_LABELS, type BHPreset } from './presets';
 
 // --- SHADERS ---
 
@@ -485,11 +483,7 @@ const BlackHoleCanvas = ({
         antialias: false, 
         powerPreference: "high-performance",
         preserveDrawingBuffer: false
-    });
-    if (!gl) {
-      console.error('WebGL context unavailable — simulation disabled.');
-      return;
-    }
+    })!;
     glRef.current = gl;
 
     const setupWorkers = () => {
@@ -685,216 +679,6 @@ const BlackHoleCanvas = ({
   );
 };
 
-// --- 3D MESH DEBUG VISUALIZER ---
-const MeshDebug3D = ({ nRef, meshData }: { nRef: any; meshData: any }) => {
-  const canvasRef = useRef<HTMLCanvasElement>(null);
-  const rotRef = useRef({ x: -0.35, y: 0.4, dragging: false, lx: 0, ly: 0 });
-  const animRef = useRef<number>(0);
-  const layerCounts = [9, 12, 10, 1];
-  const LAYER_Z = 2.2;
-  const NODE_Y = 0.75;
-
-  useEffect(() => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-    const ctx = canvas.getContext('2d');
-    if (!ctx) return;
-
-    const nodes3D = layerCounts.flatMap((count, li) =>
-      Array.from({ length: count }, (_, ni) => ({
-        x: (li - (layerCounts.length - 1) / 2) * LAYER_Z,
-        y: (ni - (count - 1) / 2) * NODE_Y,
-        z: 0,
-        li,
-        ni,
-      }))
-    );
-
-    const project = (x: number, y: number, z: number, rx: number, ry: number, cw: number, ch: number) => {
-      const cy = Math.cos(ry), sy = Math.sin(ry);
-      const x1 = x * cy - z * sy;
-      const z1 = x * sy + z * cy;
-      const cx2 = Math.cos(rx), sx2 = Math.sin(rx);
-      const y1 = y * cx2 - z1 * sx2;
-      const z2 = y * sx2 + z1 * cx2;
-      const fov = 260;
-      const d = z2 + 9;
-      return { px: (x1 * fov) / d + cw / 2, py: (y1 * fov) / d + ch / 2, depth: z2 };
-    };
-
-    const resize = () => {
-      canvas.width = canvas.offsetWidth * window.devicePixelRatio;
-      canvas.height = canvas.offsetHeight * window.devicePixelRatio;
-      ctx.scale(window.devicePixelRatio, window.devicePixelRatio);
-    };
-    resize();
-
-    const draw = () => {
-      const rot = rotRef.current;
-      if (!rot.dragging) rot.y += 0.007;
-
-      const W = canvas.offsetWidth;
-      const H = canvas.offsetHeight;
-      ctx.clearRect(0, 0, W, H);
-
-      const n = nRef.current;
-      const md = meshData.current;
-
-      const proj = nodes3D.map(node => ({
-        ...node,
-        ...project(node.x, node.y, node.z, rot.x, rot.y, W, H),
-      }));
-
-      const layerLabels = ['INPUT', 'HIDDEN-1', 'HIDDEN-2', 'OUTPUT'];
-      const layerColors = ['#06b6d4', '#10b981', '#a78bfa', '#f97316'];
-
-      layerCounts.slice(0, -1).forEach((cc, li) => {
-        const cur = proj.filter(p => p.li === li);
-        const nxt = proj.filter(p => p.li === li + 1);
-        cur.forEach(cp => {
-          nxt.forEach(np => {
-            const w = Math.sin(li * 7 + cp.ni * np.ni + 1.3);
-            const act = (n.activity[cp.ni % 9] || 0) as number;
-            const isAct = w > 0.6 || act > 0.5;
-            ctx.beginPath();
-            ctx.moveTo(cp.px, cp.py);
-            ctx.lineTo(np.px, np.py);
-            ctx.strokeStyle = isAct
-              ? `rgba(16,185,129,${isAct ? 0.35 : 0.04})`
-              : `rgba(239,68,68,${Math.max(0.02, Math.abs(w) * 0.1)})`;
-            ctx.lineWidth = isAct ? 0.7 : 0.25;
-            ctx.stroke();
-          });
-        });
-        for (let i = 0; i < cc - 1; i++) {
-          const a = proj.find(p => p.li === li && p.ni === i);
-          const b = proj.find(p => p.li === li && p.ni === i + 1);
-          if (a && b) {
-            ctx.beginPath();
-            ctx.moveTo(a.px, a.py);
-            ctx.lineTo(b.px, b.py);
-            ctx.strokeStyle = `rgba(255,255,255,0.04)`;
-            ctx.lineWidth = 0.4;
-            ctx.stroke();
-          }
-        }
-      });
-      for (let i = 0; i < layerCounts[layerCounts.length - 1] - 1; i++) {
-        const a = proj.find(p => p.li === layerCounts.length - 1 && p.ni === i);
-        const b = proj.find(p => p.li === layerCounts.length - 1 && p.ni === i + 1);
-        if (a && b) {
-          ctx.beginPath();
-          ctx.moveTo(a.px, a.py);
-          ctx.lineTo(b.px, b.py);
-          ctx.strokeStyle = `rgba(255,255,255,0.04)`;
-          ctx.lineWidth = 0.4;
-          ctx.stroke();
-        }
-      }
-
-      const sorted = [...proj].sort((a, b) => b.depth - a.depth);
-      sorted.forEach(node => {
-        const act = (n.activity[node.ni % 9] || 0) as number;
-        const rawMesh = md?.nodes ? md.nodes[node.ni * 20] : 0;
-        const meshVal = isNaN(rawMesh) ? 0 : rawMesh;
-        const simState = (n.state[node.ni % 9] || 0) as number;
-        const isAct = act > 0.5 || meshVal > 0.5;
-        const r = Math.max(2, 4.5 - node.depth * 0.15);
-        const col = layerColors[node.li];
-
-        if (isAct) {
-          const grd = ctx.createRadialGradient(node.px, node.py, 0, node.px, node.py, r * 4);
-          grd.addColorStop(0, col.replace(')', ',0.4)').replace('rgb', 'rgba'));
-          grd.addColorStop(1, 'rgba(0,0,0,0)');
-          ctx.fillStyle = grd;
-          ctx.beginPath();
-          ctx.arc(node.px, node.py, r * 4, 0, Math.PI * 2);
-          ctx.fill();
-        }
-
-        ctx.beginPath();
-        ctx.arc(node.px, node.py, r, 0, Math.PI * 2);
-        ctx.fillStyle = isAct ? col : 'rgba(255,255,255,0.12)';
-        ctx.fill();
-        ctx.strokeStyle = isAct ? col + '88' : 'rgba(255,255,255,0.08)';
-        ctx.lineWidth = 1;
-        ctx.stroke();
-
-        if (r > 3) {
-          ctx.fillStyle = `rgba(255,255,255,${isAct ? 0.65 : 0.2})`;
-          ctx.font = '6px monospace';
-          ctx.fillText(meshVal.toFixed(2), node.px + r + 2, node.py + 2);
-          ctx.fillStyle = `rgba(255,255,255,0.12)`;
-          ctx.fillText(`s:${simState.toFixed(1)}`, node.px + r + 2, node.py + 9);
-        }
-      });
-
-      layerCounts.forEach((_, li) => {
-        const ln = proj.filter(p => p.li === li);
-        if (!ln.length) return;
-        const ax = ln.reduce((s, p) => s + p.px, 0) / ln.length;
-        const my = Math.min(...ln.map(p => p.py));
-        ctx.fillStyle = layerColors[li] + '99';
-        ctx.font = 'bold 7px monospace';
-        ctx.textAlign = 'center';
-        ctx.fillText(layerLabels[li], ax, my - 10);
-        ctx.fillStyle = 'rgba(255,255,255,0.15)';
-        ctx.font = '6px monospace';
-        ctx.fillText(`N=${layerCounts[li]}`, ax, my - 3);
-        ctx.textAlign = 'left';
-      });
-
-      animRef.current = requestAnimationFrame(draw);
-    };
-    draw();
-
-    const onDown = (e: MouseEvent) => {
-      rotRef.current.dragging = true;
-      rotRef.current.lx = e.clientX;
-      rotRef.current.ly = e.clientY;
-    };
-    const onMove = (e: MouseEvent) => {
-      if (!rotRef.current.dragging) return;
-      rotRef.current.y += (e.clientX - rotRef.current.lx) * 0.012;
-      rotRef.current.x += (e.clientY - rotRef.current.ly) * 0.012;
-      rotRef.current.lx = e.clientX;
-      rotRef.current.ly = e.clientY;
-    };
-    const onUp = () => { rotRef.current.dragging = false; };
-
-    canvas.addEventListener('mousedown', onDown);
-    window.addEventListener('mousemove', onMove);
-    window.addEventListener('mouseup', onUp);
-
-    return () => {
-      cancelAnimationFrame(animRef.current);
-      canvas.removeEventListener('mousedown', onDown);
-      window.removeEventListener('mousemove', onMove);
-      window.removeEventListener('mouseup', onUp);
-    };
-  }, []);
-
-  return (
-    <div className="relative w-full bg-black/60 rounded-xl border border-white/5 overflow-hidden" style={{ height: 288 }}>
-      <canvas ref={canvasRef} className="w-full h-full cursor-grab active:cursor-grabbing" style={{ display: 'block' }} />
-      <div className="absolute top-2 left-3 text-[7px] font-mono text-white/30 uppercase tracking-widest pointer-events-none">
-        3D Mesh Debug · Drag to Rotate
-      </div>
-      <div className="absolute bottom-2 left-3 flex gap-4 pointer-events-none">
-        {[['#06b6d4', 'Input'], ['#10b981', 'Hidden-1'], ['#a78bfa', 'Hidden-2'], ['#f97316', 'Output']].map(([c, l]) => (
-          <span key={l} className="flex items-center gap-1 text-[6px] font-mono text-white/30">
-            <span className="w-1.5 h-1.5 rounded-full inline-block" style={{ background: c }} />
-            {l}
-          </span>
-        ))}
-      </div>
-      <div className="absolute top-2 right-3 text-[6px] font-mono text-white/20 uppercase pointer-events-none">
-        Node values: mesh · s: sim-state
-      </div>
-    </div>
-  );
-};
-
 // --- QUANTUM MATH OVERLAY (Scientific PDF Formulas) ---
 const MathMatrixOverlay = () => {
   return (
@@ -918,8 +702,6 @@ const MathMatrixOverlay = () => {
     </div>
   );
 };
-
-const layerCountsForDebug = [9, 12, 10, 1];
 
 export default function App() {
   const [mass, setMass] = useState(10.0);
@@ -949,7 +731,6 @@ export default function App() {
   const [starCount, setStarCount] = useState(500000);
   const [charge, setCharge] = useState(0.0);
   const [activeTab, setActiveTab] = useState<'physics' | 'optics' | 'engine' | 'neural' | 'research'>('physics');
-  const [datView, setDatView] = useState<'net' | 'mesh'>('net');
   
   // Speed Modulation States
   const [timeScale, setTimeScale] = useState(1.0);
@@ -961,79 +742,6 @@ export default function App() {
   const [agnPower, setAgnPower] = useState(0.2);
   const [tdePeak, setTdePeak] = useState(0.0);
   const [isTDEActive, setIsTDEActive] = useState(false);
-
-  // --- 4D WINDOW ---
-  const [show4DWindow, setShow4DWindow] = useState(false);
-
-  // --- ADVANCED PHYSICS PARAMETERS (research-grade precision) ---
-  // Accretion disc physics (DST/TDE papers)
-  const [eddingtonRatio, setEddingtonRatio] = useState(0.1);        // λ = L/L_Edd
-  const [diskViscosity, setDiskViscosity] = useState(0.12);          // α-viscosity (Shakura-Sunyaev)
-  const [diskAspectRatio, setDiskAspectRatio] = useState(0.05);      // H/R disk thickness
-  const [massOutflowRate, setMassOutflowRate] = useState(0.05);      // fraction of infalling mass ejected
-  const [impactParameter, setImpactParameter] = useState(1.0);       // β tidal disruption impact
-  const [windVelocity, setWindVelocity] = useState(0.05);            // disk wind speed (fraction of c)
-
-  // Relativistic jet (AGN/radio-mode papers)
-  const [jetLorentzFactor, setJetLorentzFactor] = useState(1.0);     // bulk Lorentz factor Γ
-  const [jetOpeningAngle, setJetOpeningAngle] = useState(5.0);       // half-opening angle (deg)
-  const [agnFeedbackEff, setAgnFeedbackEff] = useState(0.0);         // mechanical feedback efficiency ε
-
-  // Host galaxy / galactic environment (Nature/M-sigma papers)
-  const [stellarDispersion, setStellarDispersion] = useState(100.0); // σ stellar velocity (km/s)
-  const [mSigmaAlpha, setMSigmaAlpha] = useState(4.24);              // M-σ power law index
-  const [hotHaloTemp, setHotHaloTemp] = useState(5e7);               // hot gas halo temperature (K)
-  const [darkMatterConc, setDarkMatterConc] = useState(10.0);        // NFW concentration parameter
-
-  // Binary merger / gravitational waves (LIGO/Caltech papers)
-  const [massRatio, setMassRatio] = useState(1.0);                   // q = M₂/M₁ ≤ 1
-  const [chirpMass, setChirpMass] = useState(28.3);                  // chirp mass (M☉)
-  const [orbitalEcc, setOrbitalEcc] = useState(0.0);                 // orbital eccentricity
-  const [finalMergerSpin, setFinalMergerSpin] = useState(0.67);      // Bowen-York final spin
-
-  // S-star orbits (Keck/UCLA/GRAVITY papers)
-  const [s2OrbitalPeriod] = useState(16.0455);                       // S2 period (years) — fixed
-  const [s2Eccentricity, setS2Eccentricity] = useState(0.8843);      // S2 eccentricity (GRAVITY 2018)
-
-  // Active preset tracking
-  const [activePreset, setActivePreset] = useState<string | null>(null);
-
-  // Advanced section toggle
-  const [showAdvancedPhysics, setShowAdvancedPhysics] = useState(false);
-
-  // Load preset function
-  const loadPreset = (preset: BHPreset) => {
-    setMass(preset.mass);
-    setSpin(preset.spin);
-    setCharge(preset.charge);
-    setDistance(preset.distance);
-    setDiskIntensity(preset.diskIntensity);
-    setExposure(preset.exposure);
-    setFrameDrag(preset.frameDrag);
-    setDarkMatter(preset.darkMatter);
-    setModelType(preset.modelType);
-    setAberration(preset.aberration);
-    setCoupling(preset.coupling);
-    setRayMaxDepth(preset.rayMaxDepth);
-    setEddingtonRatio(preset.eddingtonRatio);
-    setDiskViscosity(preset.diskViscosity);
-    setJetLorentzFactor(preset.jetLorentzFactor);
-    setStellarDispersion(preset.stellarDispersion);
-    setImpactParameter(preset.impactParameter);
-    setDiskAspectRatio(preset.diskAspectRatio);
-    setMassOutflowRate(preset.massOutflowRate);
-    setAgnFeedbackEff(preset.agnFeedbackEff);
-    setMassRatio(preset.massRatio);
-    setChirpMass(preset.chirpMass);
-    setOrbitalEcc(preset.orbitalEcc);
-    setS2Eccentricity(preset.orbitalEcc > 0 ? preset.orbitalEcc : s2Eccentricity);
-    setDarkMatterConc(preset.darkMatterConc);
-    setMSigmaAlpha(preset.mSigmaAlpha > 0 ? preset.mSigmaAlpha : mSigmaAlpha);
-    setActivePreset(preset.shortName);
-    if (preset.category === 'tde') setPathway('tde');
-    else if (preset.category === 'galactic' || preset.category === 'agn') setPathway('galactic');
-    else setPathway('standard');
-  };
 
   // Classification Logic from PDF
   const getClassification = (m: number) => {
@@ -1275,7 +983,6 @@ export default function App() {
           frameDrag={frameDrag}
           darkMatter={darkMatter}
           modelType={modelType}
-          show4D={show4D}
         />
       </div>
 
@@ -1292,13 +999,6 @@ export default function App() {
           <span>GPU: {rayMaxDepth}-Depth Metric</span>
         </div>
         <div className="flex items-center gap-4">
-          <button
-            onClick={() => setShow4DWindow(v => !v)}
-            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[10px] font-semibold transition-all border ${show4DWindow ? 'bg-purple-600/30 border-purple-500/50 text-purple-300 shadow-[0_0_12px_rgba(139,92,246,0.3)]' : 'bg-white/5 border-white/10 text-white/50 hover:text-purple-300 hover:border-purple-500/30'}`}
-          >
-            <Box size={12} />
-            4D Space
-          </button>
           <button 
             onClick={() => {
               if (!document.fullscreenElement) {
@@ -1346,21 +1046,21 @@ export default function App() {
                 </div>
 
                 {/* Unified Tab Controller */}
-                <div className="flex justify-between glass-panel p-1 rounded-xl mb-2 flex-shrink-0 gap-0.5">
+                <div className="flex justify-between glass-panel p-1.5 rounded-xl mb-2 flex-shrink-0">
                   {[
-                    { id: 'physics', icon: <Zap size={12} />, label: 'Physics' },
-                    { id: 'optics', icon: <Eye size={12} />, label: 'Optics' },
-                    { id: 'engine', icon: <Cpu size={12} />, label: 'Engine' },
-                    { id: 'neural', icon: <Activity size={12} />, label: 'Data' },
-                    { id: 'research', icon: <Database size={12} />, label: 'Info' }
+                    { id: 'physics', icon: <Zap size={14} />, label: 'PHY' },
+                    { id: 'optics', icon: <Eye size={14} />, label: 'OPT' },
+                    { id: 'engine', icon: <Cpu size={14} />, label: 'ENG' },
+                    { id: 'neural', icon: <Activity size={14} />, label: 'DAT' },
+                    { id: 'research', icon: <Database size={14} />, label: 'RES' }
                   ].map(tab => (
                     <button
                       key={tab.id}
                       onClick={() => setActiveTab(tab.id as any)}
-                      className={`flex-1 flex flex-col items-center py-2 px-1 rounded-lg transition-all ${activeTab === tab.id ? 'bg-gradient-to-b from-orange-500 to-orange-600 text-black shadow-lg shadow-orange-500/25' : 'text-white/35 hover:text-white/70 hover:bg-white/5'}`}
+                      className={`flex-1 flex flex-col items-center py-2 rounded-lg transition-all ${activeTab === tab.id ? 'bg-orange-500 text-black shadow-lg shadow-orange-500/20' : 'text-white/40 hover:bg-white/5'}`}
                     >
                       {tab.icon}
-                      <span className="text-[8px] mt-0.5 font-semibold">{tab.label}</span>
+                      <span className="text-[7px] mt-1 font-bold">{tab.label}</span>
                     </button>
                   ))}
                 </div>
@@ -1375,10 +1075,9 @@ export default function App() {
                       className="space-y-4"
                     >
                       <div className="glass-panel p-5 rounded-xl">
-                        <div className="mb-6">
-                          <h2 className="text-sm font-semibold text-white/80">Geodesic Parameters</h2>
-                          <p className="text-[10px] text-white/30 mt-0.5">Kerr metric &amp; spacetime constants</p>
-                        </div>
+                        <h2 className="text-[9px] font-mono text-orange-400 uppercase tracking-[0.2em] mb-6 flex items-center gap-2">
+                           Geodesic Constants
+                        </h2>
                         <div className="space-y-6">
                           <div className="space-y-3">
                             <div className="flex justify-between text-[10px] font-mono">
@@ -1470,186 +1169,6 @@ export default function App() {
                           </div>
                         )}
                       </div>
-
-                      {/* Advanced Physics Accordion */}
-                      <div className="glass-panel rounded-xl overflow-hidden">
-                        <button
-                          onClick={() => setShowAdvancedPhysics(v => !v)}
-                          className="w-full p-5 flex items-center justify-between text-left hover:bg-white/3 transition-all"
-                        >
-                          <div>
-                            <div className="text-sm font-semibold text-white/80">Advanced Physics</div>
-                            <div className="text-[10px] text-white/35 mt-0.5">Research-grade parameters from published papers</div>
-                          </div>
-                          <motion.div
-                            animate={{ rotate: showAdvancedPhysics ? 180 : 0 }}
-                            transition={{ duration: 0.2 }}
-                            className="text-white/30"
-                          >
-                            ↓
-                          </motion.div>
-                        </button>
-
-                        <AnimatePresence>
-                          {showAdvancedPhysics && (
-                            <motion.div
-                              initial={{ height: 0, opacity: 0 }}
-                              animate={{ height: 'auto', opacity: 1 }}
-                              exit={{ height: 0, opacity: 0 }}
-                              transition={{ duration: 0.3 }}
-                              className="overflow-hidden"
-                            >
-                              <div className="px-5 pb-5 space-y-6 border-t border-white/5">
-
-                                {/* Accretion Disc — Shakura-Sunyaev */}
-                                <div className="pt-5">
-                                  <div className="flex items-center gap-2 mb-4">
-                                    <div className="w-1.5 h-1.5 rounded-full bg-orange-400" />
-                                    <span className="text-xs font-semibold text-orange-400">Accretion Disc</span>
-                                    <span className="text-[9px] text-white/25">Shakura-Sunyaev α-disk model</span>
-                                  </div>
-                                  <div className="space-y-4">
-                                    {[
-                                      { label: 'Eddington Ratio  λ = L/L_Edd', val: eddingtonRatio, set: setEddingtonRatio, min: 0.0001, max: 15.0, step: 0.0001, color: 'orange', fmt: (v: number) => v.toFixed(4) },
-                                      { label: 'α-Viscosity (Shakura-Sunyaev)', val: diskViscosity, set: setDiskViscosity, min: 0.001, max: 0.5, step: 0.001, color: 'orange', fmt: (v: number) => v.toFixed(3) },
-                                      { label: 'Disk Aspect Ratio  H/R', val: diskAspectRatio, set: setDiskAspectRatio, min: 0.001, max: 0.5, step: 0.001, color: 'orange', fmt: (v: number) => v.toFixed(3) },
-                                      { label: 'Mass Outflow Rate  ṁ_out', val: massOutflowRate, set: setMassOutflowRate, min: 0.0, max: 1.0, step: 0.005, color: 'orange', fmt: (v: number) => v.toFixed(3) },
-                                      { label: 'Disk Wind Speed  (v/c)', val: windVelocity, set: setWindVelocity, min: 0.0, max: 0.95, step: 0.001, color: 'orange', fmt: (v: number) => v.toFixed(3) },
-                                      { label: 'TDE Impact Parameter  β', val: impactParameter, set: setImpactParameter, min: 0.1, max: 8.0, step: 0.01, color: 'orange', fmt: (v: number) => v.toFixed(2) },
-                                    ].map(p => (
-                                      <div key={p.label} className="space-y-2">
-                                        <div className="flex justify-between">
-                                          <span className="text-[10px] text-white/40">{p.label}</span>
-                                          <span className={`text-[10px] font-mono text-${p.color}-400`}>{p.fmt(p.val)}</span>
-                                        </div>
-                                        <input type="range" min={p.min} max={p.max} step={p.step} value={p.val} onChange={e => p.set(parseFloat(e.target.value))} className={`w-full h-0.5 bg-white/10 rounded-full appearance-none cursor-pointer accent-${p.color}-500`} />
-                                      </div>
-                                    ))}
-                                  </div>
-                                </div>
-
-                                {/* Relativistic Jet */}
-                                <div className="pt-4 border-t border-white/5">
-                                  <div className="flex items-center gap-2 mb-4">
-                                    <div className="w-1.5 h-1.5 rounded-full bg-cyan-400" />
-                                    <span className="text-xs font-semibold text-cyan-400">Relativistic Jet</span>
-                                    <span className="text-[9px] text-white/25">AGN radio-mode feedback</span>
-                                  </div>
-                                  <div className="space-y-4">
-                                    {[
-                                      { label: 'Bulk Lorentz Factor  Γ', val: jetLorentzFactor, set: setJetLorentzFactor, min: 1.0, max: 30.0, step: 0.01, fmt: (v: number) => v.toFixed(2) },
-                                      { label: 'Jet Opening Angle  θ (deg)', val: jetOpeningAngle, set: setJetOpeningAngle, min: 0.5, max: 30.0, step: 0.1, fmt: (v: number) => v.toFixed(1) + '°' },
-                                      { label: 'Mechanical Feedback Eff.  ε', val: agnFeedbackEff, set: setAgnFeedbackEff, min: 0.0, max: 0.4, step: 0.001, fmt: (v: number) => v.toFixed(3) },
-                                    ].map(p => (
-                                      <div key={p.label} className="space-y-2">
-                                        <div className="flex justify-between">
-                                          <span className="text-[10px] text-white/40">{p.label}</span>
-                                          <span className="text-[10px] font-mono text-cyan-400">{p.fmt(p.val)}</span>
-                                        </div>
-                                        <input type="range" min={p.min} max={p.max} step={p.step} value={p.val} onChange={e => p.set(parseFloat(e.target.value))} className="w-full h-0.5 bg-white/10 rounded-full appearance-none cursor-pointer accent-cyan-500" />
-                                      </div>
-                                    ))}
-                                  </div>
-                                </div>
-
-                                {/* Host Galaxy / M-σ relation */}
-                                <div className="pt-4 border-t border-white/5">
-                                  <div className="flex items-center gap-2 mb-4">
-                                    <div className="w-1.5 h-1.5 rounded-full bg-violet-400" />
-                                    <span className="text-xs font-semibold text-violet-400">Host Galaxy</span>
-                                    <span className="text-[9px] text-white/25">M-σ correlation · NFW halo</span>
-                                  </div>
-                                  <div className="space-y-4">
-                                    {[
-                                      { label: 'Stellar Velocity Disp.  σ (km/s)', val: stellarDispersion, set: setStellarDispersion, min: 30, max: 450, step: 0.5, fmt: (v: number) => v.toFixed(1) },
-                                      { label: 'M-σ Power-Law Index  α', val: mSigmaAlpha, set: setMSigmaAlpha, min: 3.5, max: 6.0, step: 0.001, fmt: (v: number) => v.toFixed(3) },
-                                      { label: 'NFW Concentration  c', val: darkMatterConc, set: setDarkMatterConc, min: 1.0, max: 40.0, step: 0.1, fmt: (v: number) => v.toFixed(1) },
-                                      { label: 'Hot Gas Halo Temp.  T (10⁷ K)', val: hotHaloTemp / 1e7, set: (v: number) => setHotHaloTemp(v * 1e7), min: 0.1, max: 30.0, step: 0.01, fmt: (v: number) => v.toFixed(2) + '×10⁷' },
-                                    ].map(p => (
-                                      <div key={p.label} className="space-y-2">
-                                        <div className="flex justify-between">
-                                          <span className="text-[10px] text-white/40">{p.label}</span>
-                                          <span className="text-[10px] font-mono text-violet-400">{p.fmt(p.val)}</span>
-                                        </div>
-                                        <input type="range" min={p.min} max={p.max} step={p.step} value={p.val} onChange={e => p.set(parseFloat(e.target.value))} className="w-full h-0.5 bg-white/10 rounded-full appearance-none cursor-pointer accent-violet-500" />
-                                      </div>
-                                    ))}
-                                    {/* Derived M-σ mass */}
-                                    <div className="mt-2 p-3 rounded-lg bg-violet-900/10 border border-violet-500/15">
-                                      <div className="text-[9px] text-white/30 mb-1">M-σ Predicted BH Mass</div>
-                                      <div className="text-[11px] font-mono text-violet-300">
-                                        {(3.1e8 * Math.pow(stellarDispersion / 200, mSigmaAlpha)).toExponential(2)} M☉
-                                      </div>
-                                      <div className="text-[8px] text-white/20 mt-0.5">Kormendy &amp; Ho 2013, Eq. 3</div>
-                                    </div>
-                                  </div>
-                                </div>
-
-                                {/* Binary Merger / GW */}
-                                <div className="pt-4 border-t border-white/5">
-                                  <div className="flex items-center gap-2 mb-4">
-                                    <div className="w-1.5 h-1.5 rounded-full bg-rose-400" />
-                                    <span className="text-xs font-semibold text-rose-400">Binary Merger</span>
-                                    <span className="text-[9px] text-white/25">LIGO/Virgo GW parameters</span>
-                                  </div>
-                                  <div className="space-y-4">
-                                    {[
-                                      { label: 'Mass Ratio  q = M₂/M₁', val: massRatio, set: setMassRatio, min: 0.01, max: 1.0, step: 0.001, fmt: (v: number) => v.toFixed(3) },
-                                      { label: 'Chirp Mass  ℳ (M☉)', val: chirpMass, set: setChirpMass, min: 1.0, max: 150.0, step: 0.01, fmt: (v: number) => v.toFixed(2) },
-                                      { label: 'Orbital Eccentricity  e', val: orbitalEcc, set: setOrbitalEcc, min: 0.0, max: 0.999, step: 0.001, fmt: (v: number) => v.toFixed(3) },
-                                      { label: 'Final Merger Spin  a_f', val: finalMergerSpin, set: setFinalMergerSpin, min: 0.0, max: 0.998, step: 0.001, fmt: (v: number) => v.toFixed(3) },
-                                    ].map(p => (
-                                      <div key={p.label} className="space-y-2">
-                                        <div className="flex justify-between">
-                                          <span className="text-[10px] text-white/40">{p.label}</span>
-                                          <span className="text-[10px] font-mono text-rose-400">{p.fmt(p.val)}</span>
-                                        </div>
-                                        <input type="range" min={p.min} max={p.max} step={p.step} value={p.val} onChange={e => p.set(parseFloat(e.target.value))} className="w-full h-0.5 bg-white/10 rounded-full appearance-none cursor-pointer accent-rose-500" />
-                                      </div>
-                                    ))}
-                                    {/* GW frequency */}
-                                    <div className="mt-2 p-3 rounded-lg bg-rose-900/10 border border-rose-500/15">
-                                      <div className="text-[9px] text-white/30 mb-1">ISCO GW Frequency</div>
-                                      <div className="text-[11px] font-mono text-rose-300">
-                                        {chirpMass > 0 ? (4400 / (chirpMass / Math.pow(massRatio * (1 + massRatio) ** 2, 0.6))).toFixed(0) : '—'} Hz
-                                      </div>
-                                      <div className="text-[8px] text-white/20 mt-0.5">f_ISCO ≈ 4400 / (M_total/M☉) Hz</div>
-                                    </div>
-                                  </div>
-                                </div>
-
-                                {/* S-star / Galactic Centre */}
-                                <div className="pt-4 border-t border-white/5">
-                                  <div className="flex items-center gap-2 mb-4">
-                                    <div className="w-1.5 h-1.5 rounded-full bg-amber-400" />
-                                    <span className="text-xs font-semibold text-amber-400">S-Star Orbits</span>
-                                    <span className="text-[9px] text-white/25">Keck/UCLA · GRAVITY Collab.</span>
-                                  </div>
-                                  <div className="space-y-4">
-                                    <div className="space-y-2">
-                                      <div className="flex justify-between">
-                                        <span className="text-[10px] text-white/40">S2 Eccentricity  e_S2</span>
-                                        <span className="text-[10px] font-mono text-amber-400">{s2Eccentricity.toFixed(4)}</span>
-                                      </div>
-                                      <input type="range" min={0.1} max={0.999} step={0.0001} value={s2Eccentricity} onChange={e => setS2Eccentricity(parseFloat(e.target.value))} className="w-full h-0.5 bg-white/10 rounded-full appearance-none cursor-pointer accent-amber-500" />
-                                    </div>
-                                    <div className="p-3 rounded-lg bg-amber-900/10 border border-amber-500/15">
-                                      <div className="grid grid-cols-2 gap-2 text-[9px]">
-                                        <div><span className="text-white/25">Orbital Period</span><div className="font-mono text-amber-300 mt-0.5">{s2OrbitalPeriod.toFixed(4)} yr</div></div>
-                                        <div><span className="text-white/25">Eccentricity</span><div className="font-mono text-amber-300 mt-0.5">{s2Eccentricity.toFixed(4)}</div></div>
-                                        <div><span className="text-white/25">Precession (GR)</span><div className="font-mono text-amber-300 mt-0.5">11.9 ± 1.9'</div></div>
-                                        <div><span className="text-white/25">Data Source</span><div className="font-mono text-amber-300 mt-0.5">GRAVITY 2020</div></div>
-                                      </div>
-                                    </div>
-                                  </div>
-                                </div>
-
-                              </div>
-                            </motion.div>
-                          )}
-                        </AnimatePresence>
-                      </div>
-
                     </motion.div>
                   )}
 
@@ -1662,10 +1181,7 @@ export default function App() {
                       className="space-y-4"
                     >
                       <div className="glass-panel p-5 rounded-xl">
-                        <div className="mb-6">
-                          <h2 className="text-sm font-semibold text-white/80">Light Field</h2>
-                          <p className="text-[10px] text-cyan-400/60 mt-0.5">Photon path rendering &amp; optics</p>
-                        </div>
+                        <h2 className="text-[9px] font-mono text-cyan-400 uppercase tracking-[0.2em] mb-6">Light Field Properties</h2>
                         <div className="space-y-6">
                            <div className="space-y-3">
                             <div className="flex justify-between text-[10px] font-mono">
@@ -1721,10 +1237,7 @@ export default function App() {
                       className="space-y-4"
                     >
                       <div className="glass-panel p-5 rounded-xl">
-                        <div className="mb-6">
-                          <h2 className="text-sm font-semibold text-white/80">Computation</h2>
-                          <p className="text-[10px] text-blue-400/60 mt-0.5">Ray-march engine &amp; research presets</p>
-                        </div>
+                        <h2 className="text-[9px] font-mono text-blue-400 uppercase tracking-[0.2em] mb-6">Computation Matrix</h2>
                         <div className="space-y-4">
                           <div className="flex flex-col gap-3">
                             <button onClick={() => setHighPower(!highPower)} className={`w-full flex items-center justify-between p-3 rounded-lg border transition-all ${highPower ? 'bg-blue-500/20 border-blue-500 text-blue-400' : 'bg-white/5 border-white/10 text-white/40'}`}>
@@ -1737,44 +1250,9 @@ export default function App() {
                             </button>
                           </div>
                           
-                          {/* Research-Grade Presets */}
-                          <div className="pt-2">
-                            <div className="text-[10px] font-medium text-white/40 mb-3">Research Presets</div>
-                            <div className="space-y-2">
-                              {RESEARCH_PRESETS.map(preset => {
-                                const catColor = CATEGORY_COLORS[preset.category];
-                                const isActive = activePreset === preset.shortName;
-                                return (
-                                  <button
-                                    key={preset.shortName}
-                                    onClick={() => loadPreset(preset)}
-                                    className={`w-full p-3 rounded-xl border text-left transition-all group ${isActive ? 'border-orange-500/50 bg-orange-500/10' : 'border-white/8 bg-white/4 hover:bg-white/8 hover:border-white/15'}`}
-                                  >
-                                    <div className="flex items-start justify-between gap-2">
-                                      <div className="flex-1 min-w-0">
-                                        <div className="flex items-center gap-2 mb-0.5">
-                                          <span
-                                            className="text-[9px] font-semibold px-1.5 py-0.5 rounded-md"
-                                            style={{ background: catColor + '22', color: catColor, border: `1px solid ${catColor}44` }}
-                                          >
-                                            {CATEGORY_LABELS[preset.category]}
-                                          </span>
-                                          <span className="text-[9px] text-white/30">{preset.year}</span>
-                                        </div>
-                                        <div className="text-[11px] font-semibold text-white/90">{preset.name}</div>
-                                        <div className="text-[9px] text-white/35 mt-0.5 leading-relaxed line-clamp-2">{preset.description.substring(0, 80)}...</div>
-                                      </div>
-                                      <div className="text-right shrink-0">
-                                        <div className="text-[9px] text-white/30">M = {preset.mass.toFixed(1)}</div>
-                                        <div className="text-[9px] text-white/30">a* = {preset.spin.toFixed(2)}</div>
-                                        <div className="text-[8px] text-white/20 mt-1">{preset.realMassSolar}</div>
-                                      </div>
-                                    </div>
-                                    <div className="text-[8px] text-white/25 mt-1.5 font-medium">{preset.source}</div>
-                                  </button>
-                                );
-                              })}
-                            </div>
+                          <div className="grid grid-cols-2 gap-2 pt-2">
+                            <button onClick={() => { setMass(1.2); setSpin(0.9); setDistance(6.5); setAberration(0.3); setRayMaxDepth(200); }} className="bg-white/5 border border-white/10 p-2 rounded text-[8px] font-mono hover:bg-white/10 transition-all uppercase">NASA A*</button>
+                            <button onClick={() => { setMass(2.2); setSpin(0.7); setDistance(10.0); setAberration(0.1); setRayMaxDepth(250); }} className="bg-white/5 border border-white/10 p-2 rounded text-[8px] font-mono hover:bg-white/10 transition-all uppercase">ESA M87*</button>
                           </div>
                         </div>
                       </div>
@@ -1880,57 +1358,9 @@ export default function App() {
                          </div>
                       </div>
 
-                      {/* DAT View Toggle */}
-                      <div className="flex p-1 bg-white/5 rounded-xl border border-white/5 gap-1">
-                        {([
-                          { id: 'net', label: 'Neural Net', icon: '⬡' },
-                          { id: 'mesh', label: '3D Mesh Debug', icon: '◈' },
-                        ] as const).map(v => (
-                          <button
-                            key={v.id}
-                            onClick={() => setDatView(v.id)}
-                            className={`flex-1 py-2 flex items-center justify-center gap-1.5 text-[8px] font-mono uppercase tracking-widest rounded-lg transition-all ${datView === v.id ? 'bg-orange-500 text-black shadow-lg shadow-orange-500/20' : 'opacity-40 hover:opacity-80 text-white'}`}
-                          >
-                            <span>{v.icon}</span>
-                            <span>{v.label}</span>
-                          </button>
-                        ))}
+                      <div className="glass-panel p-5 rounded-xl">
+                        <NeuralNerveSystem nRef={neuralRef} meshData={meshData} />
                       </div>
-
-                      {datView === 'net' ? (
-                        <div className="glass-panel p-5 rounded-xl">
-                          <NeuralNerveSystem nRef={neuralRef} meshData={meshData} />
-                        </div>
-                      ) : (
-                        <div className="glass-panel p-3 rounded-xl">
-                          <div className="flex items-center justify-between mb-2 px-1">
-                            <h2 className="text-[9px] font-mono text-orange-400 uppercase tracking-[0.2em]">3D Node Mesh · Assessment Model</h2>
-                            <div className="flex gap-2 text-[7px] font-mono text-white/30">
-                              <span className="px-1.5 py-0.5 rounded bg-white/5 border border-white/5">{layerCountsForDebug.reduce((a, b) => a + b, 0)} nodes</span>
-                              <span className="px-1.5 py-0.5 rounded bg-white/5 border border-white/5">Live</span>
-                            </div>
-                          </div>
-                          <MeshDebug3D nRef={neuralRef} meshData={meshData} />
-                          <div className="mt-3 grid grid-cols-3 gap-2 text-[7px] font-mono">
-                            {['Mass', 'Spin', 'Disk', 'Dist', 'Coupling', 'Aberr'].map((label, i) => {
-                              const val = neuralRef.current.state[i] ?? 0;
-                              const act = neuralRef.current.activity[i] ?? 0;
-                              return (
-                                <div key={label} className="bg-black/40 rounded-lg p-2 border border-white/5">
-                                  <div className="text-white/30 uppercase tracking-wider mb-1">{label}</div>
-                                  <div className="text-orange-400 font-bold">{(typeof val === 'number' ? val : 0).toFixed(2)}</div>
-                                  <div className="w-full h-0.5 bg-white/10 rounded-full mt-1.5 overflow-hidden">
-                                    <div
-                                      className="h-full bg-orange-500 transition-all duration-300"
-                                      style={{ width: `${Math.min(100, Math.abs(typeof act === 'number' ? act : 0) * 100)}%` }}
-                                    />
-                                  </div>
-                                </div>
-                              );
-                            })}
-                          </div>
-                        </div>
-                      )}
                       
                       <div className="glass-panel p-5 rounded-xl flex-1 overflow-hidden relative group h-48 sm:h-auto">
                         <div className="absolute inset-0 p-5 overflow-y-auto scrollbar-hide">
@@ -2138,19 +1568,6 @@ export default function App() {
           </span>
         </div>
       </footer>
-
-      {/* 4D Floating Window */}
-      <AnimatePresence>
-        {show4DWindow && (
-          <FourDPanel
-            mass={mass}
-            spin={spin}
-            offset4D={offset4D}
-            coupling={coupling}
-            onClose={() => setShow4DWindow(false)}
-          />
-        )}
-      </AnimatePresence>
 
       {/* Scanning Lines Effect overlay */}
       <div className="absolute inset-0 pointer-events-none z-50 opacity-[0.03] overflow-hidden mix-blend-overlay">
