@@ -1,0 +1,1583 @@
+import React, { useRef, useEffect, useState } from 'react';
+import { Settings, Info, Zap, Maximize2, RefreshCw, Layers, Activity, Eye, Cpu, Database, Share2, Binary, Wind, Star, Camera, Thermometer } from 'lucide-react';
+import { motion, AnimatePresence } from 'motion/react';
+import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
+
+// --- SHADERS ---
+
+const vertexShaderSource = `
+  attribute vec2 position;
+  varying vec2 vUv;
+  void main() {
+    vUv = position * 0.5 + 0.5;
+    gl_Position = vec4(position, 0.0, 1.0);
+  }
+`;
+
+const fragmentShaderSource = `
+  precision highp float;
+  varying vec2 vUv;
+  uniform float uTime;
+  uniform vec2 uResolution;
+  uniform float uMass;
+  uniform float uSpin;
+  uniform float uDiskIntensity;
+  uniform float uDistance;
+  uniform float uExposure;
+  uniform float u4DOffset;
+  uniform float uCoupling;
+  uniform float uRayStep;
+  uniform float uRayMaxDepth;
+  uniform float uAberration;
+  uniform float uCharge;
+  uniform float uTDEPeak;
+  uniform vec3 uLatentVector;
+  uniform vec2 uCamRot;
+  uniform vec3 uCamPos;
+  uniform bool uOverclock;
+  uniform bool uShowDisk;
+  uniform bool uShowBackground;
+  uniform bool uShowMatrix;
+  uniform bool uShow4D;
+  uniform bool uThermalMode;
+  uniform float uFrameDrag;
+  uniform float uDarkMatter;
+  uniform int uModelType; // 0:Schwarz, 1:Kerr, 2:RN, 3:KN
+
+  #define PI 3.14159265359
+
+  // Procedural Starfield
+  float hash(vec3 p) {
+    p = fract(p * 0.1031);
+    p += dot(p, p.yzx + 33.33);
+    return fract((p.x + p.y) * p.z);
+  }
+
+  float noise(vec3 x) {
+    vec3 p = floor(x);
+    vec3 f = fract(x);
+    f = f * f * (3.0 - 2.0 * f);
+    return mix(mix(mix(hash(p + vec3(0,0,0)), hash(p + vec3(1,0,0)), f.x),
+                   mix(hash(p + vec3(0,1,0)), hash(p + vec3(1,1,0)), f.x), f.y),
+               mix(mix(hash(p + vec3(0,0,1)), hash(p + vec3(1,0,1)), f.x),
+                   mix(hash(p + vec3(0,1,1)), hash(p + vec3(1,1,1)), f.x), f.y), f.z);
+  }
+
+  vec3 getStarfield(vec3 dir) {
+    vec3 color = vec3(0.0);
+    
+    // Latent space perturbation from AI Vector
+    vec3 latentDir = dir + uLatentVector * 0.05;
+    
+    // Layered starfield for parallax and depth
+    int starLayers = uOverclock ? 6 : 3;
+    for(int i = 1; i <= 6; i++) {
+        if (i > starLayers) break;
+        float fi = float(i);
+        float scale = fi * 15.0;
+        vec3 p = latentDir * scale;
+        
+        // Luminosity and density variations
+        float n = noise(p * 0.5 + fi * 10.0);
+        float stars = pow(n, 12.0) * (2.0 / fi);
+        
+        // diverse star types (O-Type Blue to M-Type Red)
+        float type = hash(p + fi * 1.5);
+        vec3 starColor;
+        if (type > 0.9) starColor = vec3(0.6, 0.7, 1.0); // O-Type
+        else if (type > 0.7) starColor = vec3(1.0, 1.0, 1.0); // A-Type
+        else if (type > 0.5) starColor = vec3(1.0, 1.0, 0.8); // G-Type
+        else if (type > 0.3) starColor = vec3(1.0, 0.8, 0.6); // K-Type
+        else starColor = vec3(1.0, 0.5, 0.4); // M-Type
+        
+        // Twinkle effect
+        float twinkle = sin(uTime * (2.0 + type * 3.0) + type * 100.0) * 0.5 + 0.5;
+        color += starColor * stars * (0.3 + 0.7 * twinkle);
+    }
+    
+    return color;
+  }
+
+  // Simplified Gravitational Lensing
+  // Based on Schwarzschild metric approximation
+  void main() {
+    vec2 uv = (vUv - 0.5) * 2.0;
+    uv.x *= uResolution.x / uResolution.y;
+
+    // AI Neural perturbation of UV space based on latent embeddings
+    uv += sin(uv * 10.0 + uLatentVector.xy * 2.0) * 0.005 * uLatentVector.z;
+
+    // 4D Rotation / Projection with Coupling
+    float w4d = sin(uTime * 0.1 + u4DOffset * uCoupling) * 0.5;
+    
+    vec3 camPos = uCamPos + vec3(0.0, w4d, 0.0);
+    vec3 rayDir = normalize(vec3(uv, 1.2));
+
+    // FPS-Style Camera Rotation (Pitch and Yaw)
+    mat2 rotX = mat2(cos(uCamRot.x), sin(uCamRot.x), -sin(uCamRot.x), cos(uCamRot.x));
+    mat2 rotY = mat2(cos(uCamRot.y), sin(uCamRot.y), -sin(uCamRot.y), cos(uCamRot.y));
+    
+    rayDir.zy *= rotX;
+    rayDir.xz *= rotY;
+
+    // Relativistic Aberration (NASA/ESA Goddard Model)
+    // Simulates the contraction of the visual field as velocity increases
+    if (uAberration > 0.0) {
+        float speed = uAberration * 0.9;
+        float cosTheta = rayDir.z;
+        rayDir.z = (cosTheta + speed) / (1.0 + speed * cosTheta);
+        float sinTheta = sqrt(max(0.0, 1.0 - rayDir.z * rayDir.z));
+        float oldSinTheta = sqrt(max(0.0, 1.0 - cosTheta * cosTheta));
+        if (oldSinTheta > 0.0001) {
+            rayDir.xy *= (sinTheta / oldSinTheta);
+        }
+        rayDir = normalize(rayDir);
+    }
+    
+    vec3 p = camPos;
+    vec3 rd = rayDir;
+    
+    vec3 color = vec3(0.0);
+    float diskAccum = 0.0;
+    bool eventHorizon = false;
+
+    float rs = uMass * 0.5; // Schwarzschild radius
+    
+    // Model specific metrics
+    if (uModelType == 2 || uModelType == 3) {
+        float q2 = uCharge * uCharge;
+        rs = 0.5 * (uMass + sqrt(max(0.0, uMass * uMass - q2)));
+    }
+    float rsSquared = rs * rs;
+
+    // OVERCLOCK: Hard increase of max steps
+    int maxSteps = uOverclock ? 1000 : 300;
+
+    // Simulation steps
+    for(int i = 0; i < 1000; i++) {
+      if (i >= maxSteps) break;
+      if (float(i) >= uRayMaxDepth) break;
+      
+      float r2 = dot(p, p);
+      float r = sqrt(r2);
+      if (r < rs) { eventHorizon = true; break; }
+
+      // Frame Dragging (Simulated Lense-Thirring effect)
+      if (uFrameDrag > 0.0) {
+          float draggingStrength = uFrameDrag * (rs / (r + 0.1));
+          vec3 axis = vec3(0.0, 1.0, 0.0); // Spin axis
+          rd = normalize(rd + cross(axis, p) * draggingStrength * 0.1);
+      }
+
+      // Gravitational deflection physics (Schwarzschild approximation)
+      vec3 toCenter = -p / r;
+      float deflection = (3.0 * rsSquared) / (r2 * r + 0.1); 
+      rd = normalize(rd + toCenter * deflection);
+      
+      // GPU SUFFERING: Extreme Volumetric Integration Pass
+      if (uOverclock) {
+          float vNoise = noise(p * 2.0 + uTime * 0.5);
+          diskAccum += vNoise * 0.05 * uDiskIntensity;
+          // Sub-step loop for intensive shader complexity
+          for(int j=0; j<8; j++) {
+             rd = normalize(rd + noise(p * float(j+1)) * 0.001);
+          }
+      }
+
+      p += rd * uRayStep * (r * 0.4); 
+
+      // Accretion Disk intersection
+      if (uShowDisk && abs(p.y) < 0.08 && r > rs * 2.5 && r < rs * 10.0) {
+          float diskPos = (r - rs * 2.5) / (rs * 7.5);
+          float brightness = exp(-diskPos * 5.0) * uDiskIntensity;
+          
+          // TDE Outflow / Peak Brightness (Image 2 Influence)
+          brightness *= (1.0 + uTDEPeak * 50.0);
+          
+          float doppler = 1.0 + rd.x * uSpin;
+          vec3 diskColor = mix(vec3(1.0, 0.2, 0.0), vec3(0.1, 0.4, 1.0), (doppler - 0.5));
+          
+          // TDE specific color shift (Bluer high-energy outflow)
+          if (uTDEPeak > 0.0) {
+              diskColor = mix(diskColor, vec3(0.4, 0.8, 1.0), uTDEPeak);
+          }
+          
+          // Kerr-Newman Charge influence (Purple/Electronic jitter)
+          if (uCharge > 0.0) {
+              diskColor = mix(diskColor, vec3(0.6, 0.0, 1.0), uCharge * 0.5);
+              diskAccum += sin(uTime * 10.0 + r) * uCharge * 0.1;
+          }
+          
+          diskAccum += brightness;
+          color += diskColor * brightness * 0.2;
+      }
+      
+      if (r > 40.0) break;
+    }
+
+    if (!eventHorizon) {
+      if (uShowBackground) {
+        // Patch: Dark Matter Weak Lensing distortion
+        vec3 distortedRd = rd;
+        if (uDarkMatter > 0.0) {
+            distortedRd += noise(rd * 10.0 + uTime * 0.1) * 0.02 * uDarkMatter;
+            distortedRd = normalize(distortedRd);
+        }
+        color += getStarfield(distortedRd);
+      }
+    } else {
+      color = vec3(0.0);
+    }
+    
+    color += diskAccum * vec3(1.0, 0.6, 0.2);
+
+    // Vector Dot Matrix Layer with Coupling and AI Latent influence
+    if (uShowMatrix || uShow4D) {
+      // Neural grid deformation across latent dimensions
+      float couplingMode = uShow4D ? uCoupling * 2.0 : uCoupling;
+      vec2 latentUV = vUv + sin(vUv * 20.0 + uLatentVector.xy) * 0.01 * uLatentVector.z;
+      
+      // If 4D mode, perturb grid with temporal dimension overlap
+      if (uShow4D) {
+          latentUV += noise(vec3(vUv * 5.0, uTime * 0.1)) * 0.05;
+      }
+      
+      vec2 grid = fract(latentUV * uResolution / (16.0 / couplingMode));
+      float dots = smoothstep(0.45, 0.5, grid.x) * smoothstep(0.45, 0.5, grid.y);
+      float fieldIntensity = length(color);
+      color *= (1.0 + dots * fieldIntensity * (2.0 * couplingMode + length(uLatentVector)));
+    }
+
+    // Tone mapping and Chromatic Aberration Post-Process
+    vec3 outColor;
+    if (uOverclock) {
+        // GPU STRESS: Three-channel offset for chromatic aberration
+        float rCol = 1.0 - exp(-(color.r * uExposure) * 1.0);
+        float gCol = 1.0 - exp(-(color.g * uExposure) * 1.02);
+        float bCol = 1.0 - exp(-(color.b * uExposure) * 1.05);
+        outColor = vec3(rCol, gCol, bCol);
+    } else {
+        outColor = 1.0 - exp(-color * uExposure);
+    }
+
+    if (uThermalMode) {
+        float intensity = length(outColor);
+        vec3 cool = vec3(0.0, 0.0, 0.5);
+        vec3 med = vec3(0.0, 1.0, 1.0);
+        vec3 hot = vec3(1.0, 1.0, 0.0);
+        vec3 ultra = vec3(1.0, 0.0, 0.0);
+        
+        if (intensity < 0.25) outColor = mix(cool, med, intensity * 4.0);
+        else if (intensity < 0.5) outColor = mix(med, hot, (intensity - 0.25) * 4.0);
+        else if (intensity < 0.75) outColor = mix(hot, ultra, (intensity - 0.5) * 4.0);
+        else outColor = ultra;
+    }
+
+    gl_FragColor = vec4(outColor, 1.0);
+  }
+`;
+
+// --- NEURAL BACKBONE VISUALIZER (Multi-Layer Perceptron: Image 8) ---
+const NeuralNerveSystem = ({ nRef }: { nRef: any, meshData?: any }) => {
+  const n = nRef.current;
+  
+  // Layer definitions [input, hidden1, hidden2, output]
+  const layerCounts = [9, 12, 10, 1];
+  
+  return (
+    <div className="relative h-64 w-full bg-black/40 rounded-xl border border-white/5 overflow-hidden p-4">
+      <svg className="w-full h-full">
+        <defs>
+          <linearGradient id="lineGrad" x1="0%" y1="0%" x2="100%" y2="0%">
+            <stop offset="0%" stopColor="#ef4444" stopOpacity="0.2" />
+            <stop offset="100%" stopColor="#10b981" stopOpacity="0.2" />
+          </linearGradient>
+        </defs>
+        
+        {/* Connection Lines (Synapses) */}
+        {layerCounts.slice(0, -1).map((currentCount, layerIdx) => (
+          <g key={`layer-lines-${layerIdx}`}>
+            {Array.from({ length: currentCount }).map((_, i) => (
+              Array.from({ length: layerCounts[layerIdx + 1] }).map((_, j) => {
+                const x1 = 15 + (layerIdx * (100 / (layerCounts.length - 1))) + "%";
+                const y1 = 10 + (i * (80 / (currentCount - 1))) + "%";
+                const x2 = 15 + ((layerIdx + 1) * (100 / (layerCounts.length - 1))) + "%";
+                const y2 = 10 + (j * (80 / (layerCounts[layerIdx + 1] - 1))) + "%";
+                
+                // Weight visualization based on latent activity
+                const weight = Math.sin(layerIdx * 10 + i * j + n.activity[i % 9] * 5);
+                const isActive = weight > 0.8;
+                
+                return (
+                  <motion.line
+                    key={`line-${layerIdx}-${i}-${j}`}
+                    x1={x1} y1={y1} x2={x2} y2={y2}
+                    stroke={weight > 0 ? "#10b981" : "#ef4444"}
+                    strokeOpacity={isActive ? 0.6 : 0.05}
+                    strokeWidth={isActive ? 1.5 : 0.5}
+                    initial={false}
+                  />
+                );
+              })
+            ))}
+          </g>
+        ))}
+
+        {/* Nodes (Neurons) */}
+        {layerCounts.map((count, layerIdx) => (
+          <g key={`layer-nodes-${layerIdx}`}>
+            {Array.from({ length: count }).map((_, i) => {
+              const x = 15 + (layerIdx * (100 / (layerCounts.length - 1))) + "%";
+              const y = 10 + (i * (80 / (count - 1))) + "%";
+              const activity = n.activity[i % 9] || 0.1;
+              
+              return (
+                <circle 
+                  key={`node-${layerIdx}-${i}`}
+                  cx={x} cy={y} r={3} 
+                  fill={activity > 0.5 ? "#fb923c" : "#1e1e1e"}
+                  stroke="#ffffff22"
+                  strokeWidth="0.5"
+                />
+              );
+            })}
+          </g>
+        ))}
+      </svg>
+      <div className="absolute bottom-2 left-4 flex gap-8 text-[7px] font-mono text-white/30 uppercase tracking-widest">
+        <span>Input Layer</span>
+        <span>Hidden [1]</span>
+        <span>Hidden [2]</span>
+        <span>Output</span>
+      </div>
+    </div>
+  );
+};
+
+const starVertexShaderSource = `
+  precision highp float;
+  attribute vec3 aOrbit; // radius, phase, speed
+  attribute vec3 aParams; // mass, spectralType, eccentricity
+  varying vec3 vColor;
+  varying float vPath;
+  uniform float uTime;
+  uniform float uMass;
+  uniform vec2 uResolution;
+  uniform vec2 uCamRot;
+  uniform vec3 uCamPos;
+
+  void main() {
+    float r = aOrbit.x;
+    float phase = aOrbit.y;
+    float speed = aOrbit.x * 0.1 + aOrbit.z;
+    float t = uTime * speed;
+    
+    // Independent physics: Orbital mechanics with eccentricity
+    float angle = phase + t;
+    float ecc = aParams.z;
+    float r_ecc = r * (1.0 - ecc * ecc) / (1.0 + ecc * cos(angle));
+    
+    vec3 p = vec3(r_ecc * cos(angle), sin(angle * 0.5) * aParams.x * 0.1, r_ecc * sin(angle));
+    
+    // Project to camera
+    vec3 cp = p - uCamPos;
+    
+    // Apply camera rotation
+    mat2 rotX = mat2(cos(uCamRot.x), sin(uCamRot.x), -sin(uCamRot.x), cos(uCamRot.x));
+    mat2 rotY = mat2(cos(uCamRot.y), sin(uCamRot.y), -sin(uCamRot.y), cos(uCamRot.y));
+    cp.zy *= rotX;
+    cp.xz *= rotY;
+    
+    // Gravitational Lensing for every single star
+    // Simplified Einstein ring deflection
+    float distSq = dot(cp.xy, cp.xy);
+    float rs = uMass * 0.5;
+    if (distSq > 0.001) {
+        float deflection = (4.0 * rs) / sqrt(distSq + cp.z * cp.z);
+        cp.xy += cp.xy * deflection * (1.0 / cp.z);
+    }
+
+    // Perspective Projection
+    float fieldOfView = 1.2;
+    gl_Position = vec4(cp.xy * fieldOfView, 0.0, cp.z);
+    gl_PointSize = (2.0 / cp.z) * (40.0 * aParams.y);
+    
+    // Spectral color
+    if (aParams.y > 0.8) vColor = vec3(0.6, 0.8, 1.0);
+    else if (aParams.y > 0.5) vColor = vec3(1.0, 1.0, 1.0);
+    else vColor = vec3(1.0, 0.6, 0.3);
+
+    // Cyan Trail override (Reference Image influence)
+    vPath = 0.0;
+    if (mod(aOrbit.y * 137.0, 50.0) < 1.0) {
+        vColor = vec3(0.0, 0.9, 1.0);
+        vPath = 1.0;
+        gl_PointSize *= 2.0;
+    }
+    
+    // Fade based on distance
+    vColor *= clamp(1.0 - cp.z * 0.05, 0.0, 1.0);
+  }
+`;
+
+const starFragmentShaderSource = `
+  precision highp float;
+  varying vec3 vColor;
+  varying float vPath;
+  void main() {
+    float d = length(gl_PointCoord - 0.5);
+    if (d > 0.5) discard;
+    float glow = exp(-d * 8.0) * (vPath > 0.5 ? 2.5 : 1.0);
+    gl_FragColor = vec4(vColor * glow, (0.5 - d) * 2.0);
+  }
+`;
+
+const BlackHoleCanvas = ({ 
+  mass, spin, diskIntensity, distance, exposure, offset4D, 
+  coupling, rayStepSize, rayMaxDepth, aberration, highPower, 
+  overclock, charge, tdePeak, latentVector, camRot, camPos, 
+  showDisk, showBackground, showMatrix, neuralRef, starCount, 
+  timeScale, thermalMode, frameDrag, darkMatter, modelType, show4D 
+}: any) => {
+  const containerRef = useRef<HTMLDivElement>(null);
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const glRef = useRef<WebGLRenderingContext | null>(null);
+  const programRef = useRef<WebGLProgram | null>(null);
+  const starProgramRef = useRef<WebGLProgram | null>(null);
+  const accumulatedTimeRef = useRef(0);
+  const lastFrameTimeRef = useRef(Date.now());
+  const workersRef = useRef<Worker[]>([]);
+  const buffersRef = useRef<any>({});
+  
+  // Store dynamic parameters in a ref to be accessed by the render loop without re-triggering effects
+  const paramsRef = useRef({
+    mass, spin, diskIntensity, distance, exposure, offset4D, coupling, 
+    rayStepSize, rayMaxDepth, aberration, highPower, overclock, 
+    charge, tdePeak, latentVector, camRot, camPos, showDisk, 
+    showBackground, showMatrix, starCount, timeScale, thermalMode, 
+    frameDrag, darkMatter, modelType, show4D
+  });
+
+  useEffect(() => {
+    paramsRef.current = {
+      mass, spin, diskIntensity, distance, exposure, offset4D, coupling, 
+      rayStepSize, rayMaxDepth, aberration, highPower, overclock, 
+      charge, tdePeak, latentVector, camRot, camPos, showDisk, 
+      showBackground, showMatrix, starCount, timeScale, thermalMode, 
+      frameDrag, darkMatter, modelType, show4D
+    };
+  }, [
+    mass, spin, diskIntensity, distance, exposure, offset4D, coupling, 
+    rayStepSize, rayMaxDepth, aberration, highPower, overclock, 
+    charge, tdePeak, latentVector, camRot, camPos, showDisk, 
+    showBackground, showMatrix, starCount, timeScale, thermalMode, 
+    frameDrag, darkMatter, modelType, show4D
+  ]);
+  
+  const MAX_STARS = 10000000;
+
+  // --- INITIALIZATION PASS (ONE TIME) ---
+  useEffect(() => {
+    const canvas = canvasRef.current!;
+    const gl = canvas.getContext('webgl', { 
+        antialias: false, 
+        powerPreference: "high-performance",
+        preserveDrawingBuffer: false
+    })!;
+    glRef.current = gl;
+
+    const setupWorkers = () => {
+      workersRef.current.forEach(w => w.terminate());
+      if (paramsRef.current.overclock) {
+        workersRef.current = Array.from({ length: 4 }, () => new Worker(new URL('./physicsWorker.ts', import.meta.url)));
+        workersRef.current.forEach(w => w.postMessage({ mode: 'START', iterations: 1000 }));
+      }
+    };
+    setupWorkers();
+
+    const createShader = (gl: WebGLRenderingContext, type: number, source: string) => {
+      const shader = gl.createShader(type)!;
+      gl.shaderSource(shader, source);
+      gl.compileShader(shader);
+      if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
+        console.error(gl.getShaderInfoLog(shader));
+        gl.deleteShader(shader);
+        return null;
+      }
+      return shader;
+    };
+
+    const program = gl.createProgram()!;
+    const vs = createShader(gl, gl.VERTEX_SHADER, vertexShaderSource);
+    const fs = createShader(gl, gl.FRAGMENT_SHADER, fragmentShaderSource);
+    if (vs && fs) {
+        gl.attachShader(program, vs);
+        gl.attachShader(program, fs);
+        gl.linkProgram(program);
+        programRef.current = program;
+    }
+
+    const svs = createShader(gl, gl.VERTEX_SHADER, starVertexShaderSource);
+    const sfs = createShader(gl, gl.FRAGMENT_SHADER, starFragmentShaderSource);
+    if (svs && sfs) {
+        const starProgram = gl.createProgram()!;
+        gl.attachShader(starProgram, svs);
+        gl.attachShader(starProgram, sfs);
+        gl.linkProgram(starProgram);
+        starProgramRef.current = starProgram;
+    }
+
+    const quadBuffer = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, quadBuffer);
+    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 3, -1, -1, 3]), gl.STATIC_DRAW);
+    buffersRef.current.quad = quadBuffer;
+
+    const starOrbitData = new Float32Array(MAX_STARS * 3);
+    const starParamsData = new Float32Array(MAX_STARS * 3);
+    for(let i=0; i<MAX_STARS; i++) {
+        starOrbitData[i*3] = 4.0 + Math.pow(Math.random(), 1.5) * 600.0;
+        starOrbitData[i*3+1] = Math.random() * Math.PI * 2.0;
+        starOrbitData[i*3+2] = (0.05 + Math.random() * 0.1) * (Math.random() > 0.5 ? 1 : -1);
+        starParamsData[i*3] = Math.random() * 20.0;
+        starParamsData[i*3+1] = 0.1 + Math.random() * 0.9;
+        starParamsData[i*3+2] = Math.random() * 0.8;
+    }
+    
+    const orbitBuffer = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, orbitBuffer);
+    gl.bufferData(gl.ARRAY_BUFFER, starOrbitData, gl.STATIC_DRAW);
+    buffersRef.current.orbit = orbitBuffer;
+    
+    const paramsBuffer = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, paramsBuffer);
+    gl.bufferData(gl.ARRAY_BUFFER, starParamsData, gl.STATIC_DRAW);
+    buffersRef.current.params = paramsBuffer;
+
+    // Resizing logic with ResizeObserver
+    const handleResize = (entries: ResizeObserverEntry[]) => {
+      if (!entries[0] || !canvas) return;
+      const { width, height } = entries[0].contentRect;
+      const multiplier = (paramsRef.current.highPower ? 2.0 : 1.0) * (paramsRef.current.overclock ? 1.5 : 1.0);
+      const dpr = (window.devicePixelRatio || 1) * multiplier;
+      canvas.width = width * dpr;
+      canvas.height = height * dpr;
+      if (gl) gl.viewport(0, 0, canvas.width, canvas.height);
+    };
+
+    const resizeObserver = new ResizeObserver(handleResize);
+    if (containerRef.current) resizeObserver.observe(containerRef.current);
+
+    // Render loop
+    let animationFrame: number;
+    const render = () => {
+      const gl = glRef.current;
+      const program = programRef.current;
+      const starProgram = starProgramRef.current;
+      if (!gl || !canvas || !program || !starProgram) return;
+
+      const p = paramsRef.current;
+      const now = Date.now();
+      const delta = (now - lastFrameTimeRef.current) / 1000;
+      lastFrameTimeRef.current = now;
+      accumulatedTimeRef.current += delta * p.timeScale;
+      
+      const time = accumulatedTimeRef.current;
+      const nState = neuralRef.current.state;
+
+      gl.clear(gl.COLOR_BUFFER_BIT);
+      gl.enable(gl.BLEND);
+      gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+
+      // --- PASS 1: Black Hole Simulation ---
+      gl.useProgram(program);
+      gl.bindBuffer(gl.ARRAY_BUFFER, buffersRef.current.quad);
+      const positionLoc = gl.getAttribLocation(program, 'position');
+      gl.enableVertexAttribArray(positionLoc);
+      gl.vertexAttribPointer(positionLoc, 2, gl.FLOAT, false, 0, 0);
+
+      const modMass = p.mass * (nState[0] / 10.0);
+      const modSpin = p.spin * (nState[1] / 0.8);
+      const modDist = p.distance * (nState[3] / 50.0);
+
+      gl.uniform1f(gl.getUniformLocation(program, 'uTime'), time);
+      gl.uniform2f(gl.getUniformLocation(program, 'uResolution'), canvas.width, canvas.height);
+      gl.uniform1f(gl.getUniformLocation(program, 'uMass'), modMass);
+      gl.uniform1f(gl.getUniformLocation(program, 'uSpin'), modSpin);
+      gl.uniform1f(gl.getUniformLocation(program, 'uDistance'), modDist);
+      gl.uniform1f(gl.getUniformLocation(program, 'uExposure'), p.exposure);
+      gl.uniform1f(gl.getUniformLocation(program, 'u4DOffset'), p.offset4D);
+      gl.uniform1f(gl.getUniformLocation(program, 'uCoupling'), p.coupling * (nState[4]/10.0));
+      gl.uniform1f(gl.getUniformLocation(program, 'uRayStep'), p.rayStepSize);
+      gl.uniform1f(gl.getUniformLocation(program, 'uRayMaxDepth'), p.rayMaxDepth);
+      gl.uniform1f(gl.getUniformLocation(program, 'uAberration'), p.aberration * (nState[5]/0.5));
+      gl.uniform1f(gl.getUniformLocation(program, 'uCharge'), p.charge);
+      gl.uniform1f(gl.getUniformLocation(program, 'uTDEPeak'), p.tdePeak);
+      gl.uniform3f(gl.getUniformLocation(program, 'uLatentVector'), 
+        p.latentVector.x + nState[6], 
+        p.latentVector.y + nState[7], 
+        p.latentVector.z + nState[8]
+      );
+      gl.uniform2f(gl.getUniformLocation(program, 'uCamRot'), p.camRot.x, p.camRot.y);
+      gl.uniform3f(gl.getUniformLocation(program, 'uCamPos'), p.camPos.x, p.camPos.y, p.camPos.z);
+      gl.uniform1i(gl.getUniformLocation(program, 'uOverclock'), p.overclock ? 1 : 0);
+      gl.uniform1f(gl.getUniformLocation(program, 'uDiskIntensity'), p.diskIntensity * (nState[2]/10.0));
+      gl.uniform1i(gl.getUniformLocation(program, 'uShowDisk'), p.showDisk ? 1 : 0);
+      gl.uniform1i(gl.getUniformLocation(program, 'uShowBackground'), p.showBackground ? 1 : 0);
+      gl.uniform1i(gl.getUniformLocation(program, 'uShowMatrix'), p.showMatrix ? 1 : 0);
+      gl.uniform1i(gl.getUniformLocation(program, 'uShow4D'), p.show4D ? 1 : 0);
+      gl.uniform1i(gl.getUniformLocation(program, 'uThermalMode'), p.thermalMode ? 1 : 0);
+      gl.uniform1f(gl.getUniformLocation(program, 'uFrameDrag'), p.frameDrag);
+      gl.uniform1f(gl.getUniformLocation(program, 'uDarkMatter'), p.darkMatter);
+      gl.uniform1i(gl.getUniformLocation(program, 'uModelType'), p.modelType);
+
+      gl.drawArrays(gl.TRIANGLES, 0, 3);
+
+      // --- PASS 2: Stars ---
+      if (p.showBackground) {
+        gl.useProgram(starProgram);
+        gl.bindBuffer(gl.ARRAY_BUFFER, buffersRef.current.orbit);
+        const aOrbit = gl.getAttribLocation(starProgram, 'aOrbit');
+        gl.enableVertexAttribArray(aOrbit);
+        gl.vertexAttribPointer(aOrbit, 3, gl.FLOAT, false, 0, 0);
+        
+        gl.bindBuffer(gl.ARRAY_BUFFER, buffersRef.current.params);
+        const aParams = gl.getAttribLocation(starProgram, 'aParams');
+        gl.enableVertexAttribArray(aParams);
+        gl.vertexAttribPointer(aParams, 3, gl.FLOAT, false, 0, 0);
+
+        gl.uniform1f(gl.getUniformLocation(starProgram, 'uTime'), time);
+        gl.uniform1f(gl.getUniformLocation(starProgram, 'uMass'), modMass);
+        gl.uniform2f(gl.getUniformLocation(starProgram, 'uResolution'), canvas.width, canvas.height);
+        gl.uniform2f(gl.getUniformLocation(starProgram, 'uCamRot'), p.camRot.x, p.camRot.y);
+        gl.uniform3f(gl.getUniformLocation(starProgram, 'uCamPos'), p.camPos.x, p.camPos.y, p.camPos.z);
+        
+        gl.drawArrays(gl.POINTS, 0, p.starCount);
+      }
+      
+      animationFrame = requestAnimationFrame(render);
+    };
+    render();
+
+    return () => {
+        workersRef.current.forEach(w => w.terminate());
+        resizeObserver.disconnect();
+        cancelAnimationFrame(animationFrame);
+        gl.deleteBuffer(quadBuffer);
+        gl.deleteBuffer(orbitBuffer);
+        gl.deleteBuffer(paramsBuffer);
+    };
+  }, []);
+
+  return (
+    <div ref={containerRef} className="w-full h-full relative">
+        <canvas 
+        ref={canvasRef} 
+        className="w-full h-full block"
+        style={{ background: '#000' }}
+        />
+    </div>
+  );
+};
+
+// --- QUANTUM MATH OVERLAY (Scientific PDF Formulas) ---
+const MathMatrixOverlay = () => {
+  return (
+    <div className="space-y-4 font-mono text-[9px] text-orange-400/80 uppercase">
+      <div className="border-l-2 border-orange-500/50 pl-3 py-2 space-y-2">
+        <p className="text-orange-500 font-bold">Kerr-Newman Metric (Eq 4):</p>
+        <p className="text-[10px] lowercase tracking-normal font-sans">ds² = -(1 - (2Mr-Q²)/ρ²)dt² + (ρ²/Δ)dr² + ρ²dθ²</p>
+        <p className="text-[10px] lowercase tracking-normal font-sans">+ [(r²+a²)sin²θ + (2Mr-Q²)a²sin⁴θ/ρ²]dφ²</p>
+        <p className="text-[7px] text-white/40 lowercase font-sans font-light">ρ² = r² + a²cos²θ | Δ = r² - 2Mr + a² + Q²</p>
+      </div>
+      <div className="border-l-2 border-emerald-500/30 pl-3 py-2 space-y-2">
+        <p className="text-emerald-400/60 font-bold">Density Relationship (Eq 5):</p>
+        <p className="text-[10px] lowercase tracking-normal font-sans">r_g = 2GM / c²</p>
+        <p className="text-[10px] lowercase tracking-normal font-sans">ρ = M / (4/3 π r³)</p>
+        <p className="text-[10px] lowercase tracking-normal font-sans">ρ = 3c⁶ / (32π G³ M²)</p>
+      </div>
+      <div className="border-l-2 border-white/5 pl-3 py-2 opacity-30 italic font-sans normal-case">
+        <p>"Black holes are products of the death of stars."</p>
+        <p className="not-italic text-[7px] text-white/50 tracking-widest mt-1 uppercase">— PSETE Research Paper 2024</p>
+      </div>
+    </div>
+  );
+};
+
+export default function App() {
+  const [mass, setMass] = useState(10.0);
+  const [spin, setSpin] = useState(0.8);
+  const [diskIntensity, setDiskIntensity] = useState(10.0);
+  const [distance, setDistance] = useState(50.0);
+  const [exposure, setExposure] = useState(2.0);
+  const [offset4D, setOffset4D] = useState(0.0);
+  const [coupling, setCoupling] = useState(10.0);
+  const [rayStepSize, setRayStepSize] = useState(0.1);
+  const [rayMaxDepth, setRayMaxDepth] = useState(400);
+  const [aberration, setAberration] = useState(0.5);
+  const [highPower, setHighPower] = useState(false);
+  const [overclock, setOverclock] = useState(false);
+  const [latentVector, setLatentVector] = useState({ x: 0.1, y: -0.2, z: 0.5 });
+  const [camRot, setCamRot] = useState({ x: 0, y: 0 });
+  const [camPos, setCamPos] = useState({ x: 0, y: 0, z: -5.0 });
+  const [showDisk, setShowDisk] = useState(true);
+  const [showBackground, setShowBackground] = useState(true);
+  const [showMatrix, setShowMatrix] = useState(false);
+  const [thermalMode, setThermalMode] = useState(false);
+  const [frameDrag, setFrameDrag] = useState(0.5);
+  const [darkMatter, setDarkMatter] = useState(0.3);
+  const [modelType, setModelType] = useState(1); // 1: Kerr
+  const [show4D, setShow4D] = useState(false);
+  const [showUI, setShowUI] = useState(true);
+  const [starCount, setStarCount] = useState(500000);
+  const [charge, setCharge] = useState(0.0);
+  const [activeTab, setActiveTab] = useState<'physics' | 'optics' | 'engine' | 'neural' | 'research'>('physics');
+  
+  // Speed Modulation States
+  const [timeScale, setTimeScale] = useState(1.0);
+  const [moveScale, setMoveScale] = useState(1.0);
+
+  // New Pathway States
+  const [pathway, setPathway] = useState<'standard' | 'galactic' | 'tde'>('standard');
+  const [gasFraction, setGasFraction] = useState(60.0);
+  const [agnPower, setAgnPower] = useState(0.2);
+  const [tdePeak, setTdePeak] = useState(0.0);
+  const [isTDEActive, setIsTDEActive] = useState(false);
+
+  // Classification Logic from PDF
+  const getClassification = (m: number) => {
+    if (m < 5.0) return { type: "SBH", desc: "Stellar-Mass" };
+    if (m < 15.0) return { type: "IMBH", desc: "Intermediate-Mass" };
+    return { type: "MBH", desc: "Supermassive (Gargantua Class)" };
+  };
+  const bhClass = getClassification(mass);
+
+  // --- SYSTEM LOAD BALANCER ---
+  const ramBuffer = useRef<Float32Array | null>(null);
+  const neuralWorkers = useRef<Worker[]>([]);
+  const meshData = useRef({
+    nodes: new Float32Array(2048).map(() => Math.random()),
+    weights: new Float32Array(2048 * 2048).map(() => Math.random() * 0.2 - 0.1),
+    activity: 0
+  });
+
+  const touchState = useRef({ isTouching: false, lastTouch: { x: 0, y: 0 } });
+
+  useEffect(() => {
+    // Stress tests only active when Overclocked
+    if (!overclock) {
+       ramBuffer.current = null;
+       neuralWorkers.current.forEach(w => w.terminate());
+       neuralWorkers.current = [];
+       return;
+    }
+
+    // pillars of weight 1: RAM STRESS (Active only on Overclock)
+    const bufferSize = 1024 * 1024 * 128; // 512MB
+    ramBuffer.current = new Float32Array(bufferSize);
+    
+    const ramInterval = setInterval(() => {
+      const buf = ramBuffer.current;
+      if (!buf) return;
+      for (let i = 0; i < 50000; i++) {
+        const idx = Math.floor(Math.random() * bufferSize);
+        buf[idx] = Math.random();
+      }
+    }, 32); // Lower frequency for stability
+
+    // pillars of weight 2: CPU STRESS (Neural Mesh)
+    const workers = Array.from({ length: 4 }, () => new Worker(new URL('./neuralWorker.ts', import.meta.url)));
+    
+    workers.forEach(w => {
+      w.onmessage = (e) => {
+        meshData.current.nodes = e.data.nodes;
+        meshData.current.activity = e.data.activity;
+        // Controlled re-queue
+        setTimeout(() => {
+           if(neuralWorkers.current.includes(w)) {
+              w.postMessage({
+                mode: 'NEURAL_TICK',
+                nodes: meshData.current.nodes,
+                weights: meshData.current.weights
+              });
+           }
+        }, 32); 
+      };
+      w.postMessage({
+        mode: 'NEURAL_TICK',
+        nodes: meshData.current.nodes,
+        weights: meshData.current.weights
+      });
+    });
+    neuralWorkers.current = workers;
+
+    return () => {
+      clearInterval(ramInterval);
+      workers.forEach(w => w.terminate());
+    };
+  }, [overclock]);
+
+  // --- NEURAL MESH BACKBONE (Legacy Sync for UI) ---
+  const neuralRef = useRef({
+    state: [10, 0.8, 10, 50, 10, 0.5, 0.1, 0.1, 0.1], // Mass, Spin, Disk, Dist, Coupling, Aberration, LatentX, LatentY, LatentZ
+    activity: new Float32Array(9)
+  });
+
+  // Neural propagation loop (Legacy UI bridge)
+  useEffect(() => {
+    const propagate = setInterval(() => {
+      const n = neuralRef.current;
+      const nodes = meshData.current.nodes;
+      
+      // Bridge the high-node mesh back to the 9 primary simulation controllers
+      for (let i = 0; i < 9; i++) {
+        n.state[i] = nodes[i * 20] * (i < 5 ? 100 : 1); // Scale for heavy metrics
+        n.activity[i] = meshData.current.activity;
+      }
+      
+      (window as any).__neuralActivity = meshData.current.activity;
+    }, 16);
+    return () => clearInterval(propagate);
+  }, []);
+
+  const schRadius = (mass * 2.95).toFixed(2);
+
+  const takeScreenshot = () => {
+    const canvas = document.querySelector('canvas');
+    if (!canvas) return;
+    const url = canvas.toDataURL('image/png');
+    const link = document.createElement('a');
+    link.download = `blackhole-capture-${Date.now()}.png`;
+    link.href = url;
+    link.click();
+  };
+
+  const triggerTDE = () => {
+    if (isTDEActive) return;
+    setIsTDEActive(true);
+    let start = Date.now();
+    const duration = 5000;
+    
+    const animateTDE = () => {
+      const elapsed = Date.now() - start;
+      const progress = elapsed / duration;
+      
+      if (progress < 0.2) {
+        setTdePeak(progress * 5); // Rapid rise
+      } else {
+        setTdePeak(Math.max(0, 1 - (progress - 0.2) * 1.25)); // Slower decay
+      }
+      
+      if (progress < 1) requestAnimationFrame(animateTDE);
+      else {
+        setIsTDEActive(false);
+        setTdePeak(0);
+      }
+    };
+    requestAnimationFrame(animateTDE);
+  };
+
+  const loadS2Preset = () => {
+    setPathway('standard');
+    setMass(42.0); // 4.2 million solar masses simplified
+    setSpin(0.9);
+    setDistance(200.0);
+    setStarCount(1000000);
+    setExposure(1.5);
+    setDiskIntensity(5.0);
+  };
+
+  // Hyper-Responsive Movement Tick (125Hz Polling)
+  useEffect(() => {
+    const moveTick = setInterval(() => {
+        // Overclocked movement response: hold screen to move forward in look direction
+        if(!touchState.current.isTouching) return;
+        
+        const speed = 0.5 * (overclock ? 3.0 : 1.0) * moveScale;
+        const forward = { x: Math.sin(camRot.y), z: Math.cos(camRot.y) };
+
+        setCamPos(prev => ({
+            x: prev.x + forward.x * speed,
+            y: prev.y,
+            z: prev.z + forward.z * speed
+        }));
+    }, 8); // 8ms = ~125Hz for immediate response
+    return () => clearInterval(moveTick);
+  }, [camRot, overclock, moveScale]);
+
+  return (
+    <div 
+      className="relative w-full h-screen bg-[#050505] text-[#e0e0e0] overflow-hidden font-sans flex flex-col touch-none"
+      onTouchStart={(e) => {
+        const touch = e.touches[0];
+        touchState.current.lastTouch = { x: touch.clientX, y: touch.clientY };
+        touchState.current.isTouching = true;
+      }}
+      onTouchEnd={() => {
+        touchState.current.isTouching = false;
+      }}
+      onTouchMove={(e) => {
+        const touch = e.touches[0];
+        const last = touchState.current.lastTouch;
+        if (last) {
+          const dx = touch.clientX - last.x;
+          const dy = touch.clientY - last.y;
+          // Overclocked rotation sensitivity
+          const sensitivity = overclock ? 0.015 : 0.008;
+          setCamRot(prev => ({
+            x: Math.max(-Math.PI/2, Math.min(Math.PI/2, prev.x - dy * sensitivity)),
+            y: prev.y - dx * sensitivity
+          }));
+          touchState.current.lastTouch = { x: touch.clientX, y: touch.clientY };
+        }
+      }}
+      onMouseDown={(e) => {
+        touchState.current.lastTouch = { x: e.clientX, y: e.clientY };
+        touchState.current.isTouching = true;
+      }}
+      onMouseUp={() => {
+        touchState.current.isTouching = false;
+      }}
+      onMouseLeave={() => {
+        touchState.current.isTouching = false;
+      }}
+      onMouseMove={(e) => {
+        if (!touchState.current.isTouching) return;
+        const last = touchState.current.lastTouch;
+        const dx = e.clientX - last.x;
+        const dy = e.clientY - last.y;
+        const sensitivity = overclock ? 0.015 : 0.008;
+        setCamRot(prev => ({
+          x: Math.max(-Math.PI/2, Math.min(Math.PI/2, prev.x - dy * sensitivity)),
+          y: prev.y - dx * sensitivity
+        }));
+        touchState.current.lastTouch = { x: e.clientX, y: e.clientY };
+      }}
+    >
+      {/* Simulation Layer */}
+      <div className="absolute inset-0 z-0">
+        <BlackHoleCanvas 
+          mass={mass} 
+          spin={spin} 
+          diskIntensity={diskIntensity}
+          distance={distance}
+          exposure={exposure}
+          offset4D={offset4D}
+          coupling={coupling}
+          rayStepSize={rayStepSize}
+          rayMaxDepth={rayMaxDepth}
+          aberration={aberration}
+          highPower={highPower}
+          overclock={overclock}
+          charge={charge}
+          tdePeak={tdePeak}
+          latentVector={latentVector}
+          camRot={camRot}
+          camPos={camPos}
+          showDisk={showDisk}
+          showBackground={showBackground}
+          showMatrix={showMatrix}
+          neuralRef={neuralRef}
+          starCount={starCount}
+          timeScale={timeScale}
+          thermalMode={thermalMode}
+          frameDrag={frameDrag}
+          darkMatter={darkMatter}
+          modelType={modelType}
+        />
+      </div>
+
+      {/* Header */}
+      <header className="h-16 flex items-center justify-between px-8 z-20 border-b border-white/5 bg-black/40 backdrop-blur-sm pointer-events-auto">
+        <div className="flex items-center gap-4">
+          <div className="w-2.5 h-2.5 rounded-full bg-orange-500 animate-pulse shadow-[0_0_10px_rgba(249,115,22,0.5)]"></div>
+          <h1 className="text-[10px] font-mono tracking-[0.4em] uppercase text-white/70">Singularity v4.1 // Real-Time Kerr Metric Simulator</h1>
+        </div>
+        <div className="flex gap-8 text-[10px] font-mono uppercase opacity-50 hidden md:flex">
+          <span className={overclock ? 'text-red-400' : ''}>CPU: {overclock ? '4-Core Fabric' : 'Integrated Logic'}</span>
+          <span className={overclock ? 'text-red-400' : ''}>RAM: {overclock ? '512MB Buffer' : 'Nominal'}</span>
+          <span>VRAM: {starCount.toLocaleString()} Stars</span>
+          <span>GPU: {rayMaxDepth}-Depth Metric</span>
+        </div>
+        <div className="flex items-center gap-4">
+          <button 
+            onClick={() => {
+              if (!document.fullscreenElement) {
+                document.documentElement.requestFullscreen().catch(err => console.error(err));
+              } else {
+                document.exitFullscreen();
+              }
+            }}
+            className="p-2 hover:bg-white/5 rounded-full transition-colors pointer-events-auto text-white/50 hover:text-white"
+          >
+            <Maximize2 size={16} />
+          </button>
+          <button 
+            onClick={() => setShowUI(!showUI)}
+            className="p-2 hover:bg-white/5 rounded-full transition-colors pointer-events-auto text-white/50 hover:text-white"
+          >
+            <Settings size={16} />
+          </button>
+        </div>
+      </header>
+
+      {/* Main Content Area */}
+      <main className="flex-1 relative flex pointer-events-none">
+        <AnimatePresence mode="wait">
+          {showUI && (
+            <>
+              {/* Categorized Control Interface */}
+              <motion.section 
+                initial={{ x: -100, opacity: 0 }}
+                animate={{ x: 0, opacity: 1 }}
+                exit={{ x: -100, opacity: 0 }}
+                className="w-full sm:w-80 p-4 sm:p-6 z-20 flex flex-col gap-4 pointer-events-auto overflow-y-auto scrollbar-hide max-h-screen"
+              >
+                {/* Pathway Switcher (Image 1 Influence) */}
+                <div className="flex p-1 bg-white/5 rounded-xl border border-white/5 gap-1 mb-2">
+                  {(['standard', 'galactic', 'tde'] as const).map((p) => (
+                    <button
+                      key={p}
+                      onClick={() => setPathway(p)}
+                      className={`flex-1 py-1.5 text-[8px] font-mono uppercase tracking-widest rounded transition-all ${pathway === p ? 'bg-orange-500 text-black shadow-lg shadow-orange-500/20' : 'opacity-40 hover:opacity-100'}`}
+                    >
+                      {p}
+                    </button>
+                  ))}
+                </div>
+
+                {/* Unified Tab Controller */}
+                <div className="flex justify-between glass-panel p-1.5 rounded-xl mb-2 flex-shrink-0">
+                  {[
+                    { id: 'physics', icon: <Zap size={14} />, label: 'PHY' },
+                    { id: 'optics', icon: <Eye size={14} />, label: 'OPT' },
+                    { id: 'engine', icon: <Cpu size={14} />, label: 'ENG' },
+                    { id: 'neural', icon: <Activity size={14} />, label: 'DAT' },
+                    { id: 'research', icon: <Database size={14} />, label: 'RES' }
+                  ].map(tab => (
+                    <button
+                      key={tab.id}
+                      onClick={() => setActiveTab(tab.id as any)}
+                      className={`flex-1 flex flex-col items-center py-2 rounded-lg transition-all ${activeTab === tab.id ? 'bg-orange-500 text-black shadow-lg shadow-orange-500/20' : 'text-white/40 hover:bg-white/5'}`}
+                    >
+                      {tab.icon}
+                      <span className="text-[7px] mt-1 font-bold">{tab.label}</span>
+                    </button>
+                  ))}
+                </div>
+
+                <AnimatePresence mode="wait">
+                  {activeTab === 'physics' && (
+                    <motion.div 
+                      key="physics"
+                      initial={{ opacity: 0, scale: 0.95 }}
+                      animate={{ opacity: 1, scale: 1 }}
+                      exit={{ opacity: 0, scale: 0.95 }}
+                      className="space-y-4"
+                    >
+                      <div className="glass-panel p-5 rounded-xl">
+                        <h2 className="text-[9px] font-mono text-orange-400 uppercase tracking-[0.2em] mb-6 flex items-center gap-2">
+                           Geodesic Constants
+                        </h2>
+                        <div className="space-y-6">
+                          <div className="space-y-3">
+                            <div className="flex justify-between text-[10px] font-mono">
+                              <span className="opacity-40 uppercase">NASA Model</span>
+                               <select 
+                                 value={modelType} 
+                                 onChange={(e) => setModelType(parseInt(e.target.value))}
+                                 className="bg-black/40 text-orange-400 border border-white/10 rounded px-1 text-[8px] uppercase"
+                               >
+                                 <option value={0}>Schwarzschild</option>
+                                 <option value={1}>Kerr (Spin)</option>
+                                 <option value={2}>R-Nordström (Charge)</option>
+                                 <option value={3}>Kerr-Newman</option>
+                               </select>
+                            </div>
+                          </div>
+
+                          {[
+                            { label: 'Mass (M☉)', val: mass, setter: setMass, min: 0.1, max: 25.0, step: 0.1 },
+                            { label: 'Spin (a*)', val: spin, setter: setSpin, min: 0.0, max: 1.95, step: 0.01 },
+                            { label: 'Distance (AU)', val: distance, setter: setDistance, min: 2.0, max: 150.0, step: 1.0 },
+                            { label: '4D Offset', val: offset4D, setter: setOffset4D, min: -3.14, max: 3.14, step: 0.01 },
+                            { label: 'Coupling (λ)', val: coupling, setter: setCoupling, min: 0.1, max: 30.0, step: 0.1 },
+                            { label: 'Net Charge (Q)', val: charge, setter: setCharge, min: 0.0, max: 2.0, step: 0.01 },
+                            { label: 'Frame Drag (ω)', val: frameDrag, setter: setFrameDrag, min: 0.0, max: 1.0, step: 0.01 },
+                            { label: 'Dark Matter', val: darkMatter, setter: setDarkMatter, min: 0.0, max: 2.0, step: 0.1 }
+                          ].map(cfg => (
+                            <div key={cfg.label} className="space-y-3">
+                              <div className="flex justify-between text-[10px] font-mono">
+                                <span className="opacity-40 uppercase">{cfg.label}</span>
+                                <span className="text-orange-500">{cfg.val.toFixed(2)}</span>
+                              </div>
+                              <input 
+                                type="range" min={cfg.min} max={cfg.max} step={cfg.step} 
+                                value={cfg.val} onChange={(e) => cfg.setter(parseFloat(e.target.value))}
+                                className="w-full h-1 bg-white/10 rounded-full appearance-none cursor-pointer accent-orange-500"
+                              />
+                            </div>
+                          ))}
+                        </div>
+
+                        {/* Pathway Specific Controls */}
+                        {pathway === 'galactic' && (
+                          <div className="mt-6 pt-6 border-t border-white/5 space-y-6">
+                            <div className="flex items-center gap-2 text-[9px] font-mono text-emerald-400 uppercase tracking-widest">
+                              <Wind size={12} /> Galactic Feedback Mechanics
+                            </div>
+                            <div className="space-y-3">
+                              <div className="flex justify-between text-[10px] font-mono">
+                                <span className="opacity-40 uppercase">Cool Gas Fraction</span>
+                                <span className="text-emerald-500">{gasFraction.toFixed(1)}%</span>
+                              </div>
+                              <input 
+                                type="range" min="0" max="100" step="1" 
+                                value={gasFraction} onChange={(e) => setGasFraction(parseFloat(e.target.value))}
+                                className="w-full h-1 bg-white/10 rounded-full appearance-none cursor-pointer accent-emerald-500"
+                              />
+                            </div>
+                            <div className="space-y-3">
+                              <div className="flex justify-between text-[10px] font-mono">
+                                <span className="opacity-40 uppercase">AGN Feedback Power</span>
+                                <span className="text-emerald-500">{agnPower.toFixed(2)}</span>
+                              </div>
+                              <input 
+                                type="range" min="0" max="1" step="0.01" 
+                                value={agnPower} onChange={(e) => setAgnPower(parseFloat(e.target.value))}
+                                className="w-full h-1 bg-white/10 rounded-full appearance-none cursor-pointer accent-emerald-500"
+                              />
+                            </div>
+                          </div>
+                        )}
+
+                        {pathway === 'tde' && (
+                          <div className="mt-6 pt-6 border-t border-white/5 space-y-6">
+                            <div className="flex items-center gap-2 text-[9px] font-mono text-blue-400 uppercase tracking-widest">
+                              <Star size={12} /> Tidal Disruption Event
+                            </div>
+                            <button 
+                              onClick={triggerTDE}
+                              className={`w-full py-4 rounded-xl font-mono text-[9px] uppercase tracking-[0.3em] transition-all border ${isTDEActive ? 'bg-blue-500/20 text-blue-400 border-blue-500/50 cursor-wait' : 'bg-white/5 hover:bg-white/10 border-white/10'}`}
+                            >
+                              {isTDEActive ? `Thermal Peak: ${(tdePeak * 100).toFixed(0)}%` : 'Trigger Stellar Disruption'}
+                            </button>
+                            <div className="p-3 bg-white/5 rounded border border-white/10">
+                               <p className="text-[7px] text-white/30 uppercase leading-relaxed">
+                                  Simulating the spaghettification of a solar-type star. Accretion rate exceeds Eddington limit in peak phase.
+                               </p>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    </motion.div>
+                  )}
+
+                  {activeTab === 'optics' && (
+                    <motion.div 
+                      key="optics"
+                      initial={{ opacity: 0, scale: 0.95 }}
+                      animate={{ opacity: 1, scale: 1 }}
+                      exit={{ opacity: 0, scale: 0.95 }}
+                      className="space-y-4"
+                    >
+                      <div className="glass-panel p-5 rounded-xl">
+                        <h2 className="text-[9px] font-mono text-cyan-400 uppercase tracking-[0.2em] mb-6">Light Field Properties</h2>
+                        <div className="space-y-6">
+                           <div className="space-y-3">
+                            <div className="flex justify-between text-[10px] font-mono">
+                              <span className="opacity-40 uppercase">Exposure</span>
+                              <span className="text-cyan-400">{exposure.toFixed(2)}</span>
+                            </div>
+                            <input 
+                              type="range" min="0.1" max="10.0" step="0.1" 
+                              value={exposure} onChange={(e) => setExposure(parseFloat(e.target.value))}
+                              className="w-full h-1 bg-white/10 rounded-full appearance-none cursor-pointer accent-cyan-500"
+                            />
+                          </div>
+                          
+                          <div className="space-y-3">
+                            <div className="flex justify-between text-[10px] font-mono">
+                              <span className="opacity-40 uppercase">Star Density</span>
+                              <span className="text-cyan-400">{(starCount/1000000).toFixed(1)}M</span>
+                            </div>
+                            <input 
+                              type="range" min="100000" max="10000000" step="100000" 
+                              value={starCount} onChange={(e) => setStarCount(parseInt(e.target.value))}
+                              className="w-full h-1 bg-white/10 rounded-full appearance-none cursor-pointer accent-cyan-500"
+                            />
+                          </div>
+
+                          <div className="grid grid-cols-2 gap-2">
+                             {[
+                               { label: 'Disk', state: showDisk, toggle: setShowDisk },
+                               { label: 'Stars', state: showBackground, toggle: setShowBackground },
+                               { label: 'Matrix', state: showMatrix, toggle: setShowMatrix },
+                               { label: 'Thermal', state: thermalMode, toggle: setThermalMode }
+                             ].map(b => (
+                               <button 
+                                 key={b.label}
+                                 onClick={() => b.toggle(!b.state)} 
+                                 className={`p-3 rounded-lg border text-[8px] font-mono uppercase transition-all ${b.state ? 'bg-cyan-500/10 border-cyan-500/30 text-cyan-400' : 'bg-white/5 border-white/10 text-white/40'}`}
+                               >
+                                 {b.label}
+                               </button>
+                             ))}
+                          </div>
+                        </div>
+                      </div>
+                    </motion.div>
+                  )}
+
+                  {activeTab === 'engine' && (
+                    <motion.div 
+                      key="engine"
+                      initial={{ opacity: 0, scale: 0.95 }}
+                      animate={{ opacity: 1, scale: 1 }}
+                      exit={{ opacity: 0, scale: 0.95 }}
+                      className="space-y-4"
+                    >
+                      <div className="glass-panel p-5 rounded-xl">
+                        <h2 className="text-[9px] font-mono text-blue-400 uppercase tracking-[0.2em] mb-6">Computation Matrix</h2>
+                        <div className="space-y-4">
+                          <div className="flex flex-col gap-3">
+                            <button onClick={() => setHighPower(!highPower)} className={`w-full flex items-center justify-between p-3 rounded-lg border transition-all ${highPower ? 'bg-blue-500/20 border-blue-500 text-blue-400' : 'bg-white/5 border-white/10 text-white/40'}`}>
+                               <span className="text-[9px] font-bold uppercase tracking-tighter">Super Sampling</span>
+                               <RefreshCw size={10} className={highPower ? 'animate-spin' : ''} />
+                            </button>
+                            <button onClick={() => setOverclock(!overclock)} className={`w-full flex items-center justify-between p-3 rounded-lg border transition-all ${overclock ? 'bg-red-500/20 border-red-500 text-red-400' : 'bg-white/5 border-white/10 text-white/40'}`}>
+                               <span className="text-[9px] font-bold uppercase tracking-tighter">Overclock Engine</span>
+                               <Zap size={10} className={overclock ? 'animate-pulse' : ''} />
+                            </button>
+                          </div>
+                          
+                          <div className="grid grid-cols-2 gap-2 pt-2">
+                            <button onClick={() => { setMass(1.2); setSpin(0.9); setDistance(6.5); setAberration(0.3); setRayMaxDepth(200); }} className="bg-white/5 border border-white/10 p-2 rounded text-[8px] font-mono hover:bg-white/10 transition-all uppercase">NASA A*</button>
+                            <button onClick={() => { setMass(2.2); setSpin(0.7); setDistance(10.0); setAberration(0.1); setRayMaxDepth(250); }} className="bg-white/5 border border-white/10 p-2 rounded text-[8px] font-mono hover:bg-white/10 transition-all uppercase">ESA M87*</button>
+                          </div>
+                        </div>
+                      </div>
+
+                      <div className="glass-panel p-5 rounded-xl">
+                        <h2 className="text-[9px] font-mono text-blue-400 uppercase tracking-[0.2em] mb-4">Velocity Modulation</h2>
+                        <div className="space-y-4">
+                           <div className="space-y-2">
+                             <div className="flex justify-between text-[8px] font-mono uppercase opacity-40">
+                               <span>Time Dilation Scale</span>
+                               <span className="text-blue-400">{timeScale.toFixed(2)}x</span>
+                             </div>
+                             <div className="flex gap-1">
+                                {[0.1, 0.5, 1.0].map(s => (
+                                  <button 
+                                    key={s} 
+                                    onClick={() => setTimeScale(s)}
+                                    className={`flex-1 py-2 rounded text-[8px] font-mono border transition-all ${timeScale === s ? 'bg-blue-500/20 border-blue-500 text-blue-400' : 'bg-white/5 border-white/10 text-white/40 hover:bg-white/10'}`}
+                                  >
+                                    {s}x {s < 1.0 ? 'Slow' : 'Norm'}
+                                  </button>
+                                ))}
+                             </div>
+                           </div>
+                           
+                           <div className="space-y-2">
+                             <div className="flex justify-between text-[8px] font-mono uppercase opacity-40">
+                               <span>Movement Damping</span>
+                               <span className="text-blue-400">{moveScale.toFixed(2)}x</span>
+                             </div>
+                             <div className="flex gap-1">
+                                {[0.2, 0.5, 1.0].map(s => (
+                                  <button 
+                                    key={s} 
+                                    onClick={() => setMoveScale(s)}
+                                    className={`flex-1 py-2 rounded text-[8px] font-mono border transition-all ${moveScale === s ? 'bg-blue-500/20 border-blue-500 text-blue-400' : 'bg-white/5 border-white/10 text-white/40 hover:bg-white/10'}`}
+                                  >
+                                    {s}x {s < 1.0 ? 'Damp' : 'Free'}
+                                  </button>
+                                ))}
+                             </div>
+                           </div>
+                        </div>
+                      </div>
+
+                      <div className="glass-panel p-5 rounded-xl">
+                        <h2 className="text-[9px] font-mono text-blue-400 uppercase tracking-[0.2em] mb-4">Export Hub</h2>
+                        <div className="space-y-2">
+                          <button 
+                             onClick={takeScreenshot}
+                             className="w-full flex items-center justify-between p-4 rounded-xl bg-white/5 border border-white/10 hover:bg-white/10 transition-all group"
+                          >
+                             <div className="flex items-center gap-3">
+                                <Camera size={14} className="text-blue-400 group-hover:scale-110 transition-transform" />
+                                <span className="text-[10px] font-mono uppercase">Full Matrix Capture</span>
+                             </div>
+                             <span className="text-[8px] opacity-40">PNG</span>
+                          </button>
+                          <button 
+                             onClick={() => {
+                               const data = Array.from({length: 1000}, () => ({
+                                 mass: Math.random() * 100,
+                                 spin: Math.random(),
+                                 charge: Math.random()
+                               }));
+                               const blob = new Blob([JSON.stringify(data)], {type: 'application/json'});
+                               const url = URL.createObjectURL(blob);
+                               const a = document.createElement('a');
+                               a.href = url;
+                               a.download = 'sim-params-10k.json';
+                               a.click();
+                             }}
+                             className="w-full flex items-center justify-between p-4 rounded-xl bg-white/5 border border-white/10 hover:bg-white/10 transition-all group"
+                          >
+                             <div className="flex items-center gap-3">
+                                <Database size={14} className="text-cyan-400 group-hover:scale-110 transition-transform" />
+                                <span className="text-[10px] font-mono uppercase">Generate 10k Params</span>
+                             </div>
+                             <span className="text-[8px] opacity-40">JSON</span>
+                          </button>
+                        </div>
+                      </div>
+                    </motion.div>
+                  )}
+
+                  {activeTab === 'neural' && (
+                    <motion.div 
+                      key="neural"
+                      initial={{ opacity: 0, scale: 0.95 }}
+                      animate={{ opacity: 1, scale: 1 }}
+                      exit={{ opacity: 0, scale: 0.95 }}
+                      className="space-y-4 pb-12 sm:pb-0"
+                    >
+                      {/* Integrated Stats for Mobile */}
+                      <div className="glass-panel p-4 rounded-xl flex items-center justify-between">
+                         <div className="flex flex-col">
+                            <span className="text-[7px] opacity-40 uppercase">Schwarzschild Range</span>
+                            <span className="font-mono text-xl">{schRadius}</span>
+                         </div>
+                         <div className="flex flex-col text-right">
+                            <span className="text-[7px] opacity-40 uppercase">Velocity</span>
+                            <span className="font-mono text-xl">{(1 + spin * 0.5).toFixed(2)}c</span>
+                         </div>
+                      </div>
+
+                      <div className="glass-panel p-5 rounded-xl">
+                        <NeuralNerveSystem nRef={neuralRef} meshData={meshData} />
+                      </div>
+                      
+                      <div className="glass-panel p-5 rounded-xl flex-1 overflow-hidden relative group h-48 sm:h-auto">
+                        <div className="absolute inset-0 p-5 overflow-y-auto scrollbar-hide">
+                          <h2 className="text-[9px] font-mono text-orange-400 uppercase tracking-[0.2em] mb-4">Quantum Integration</h2>
+                          <MathMatrixOverlay />
+                        </div>
+                      </div>
+                    </motion.div>
+                  )}
+
+                  {activeTab === 'research' && (
+                    <motion.div 
+                      key="research"
+                      initial={{ opacity: 0, scale: 0.95 }}
+                      animate={{ opacity: 1, scale: 1 }}
+                      exit={{ opacity: 0, scale: 0.95 }}
+                      className="space-y-4"
+                    >
+                      <div className="glass-panel p-5 rounded-xl border-red-500/30">
+                        <div className="flex items-center justify-between mb-4">
+                           <h2 className="text-[9px] font-mono text-red-400 uppercase tracking-[0.2em] flex items-center gap-2">
+                              <Database size={12} /> Stolen Enemy Intelligence
+                           </h2>
+                           <span className="text-[8px] px-2 py-0.5 bg-red-500/20 text-red-500 rounded-full font-mono animate-pulse">BREACHED</span>
+                        </div>
+                        
+                        <div className="grid grid-cols-2 gap-4 mb-6">
+                           <div className="bg-white/5 p-3 rounded-lg border border-white/5">
+                              <div className="text-[8px] opacity-40 uppercase mb-1">Black Hole Core</div>
+                              <div className="text-[12px] font-mono text-white">4.154e6 M☉</div>
+                              <div className="w-full h-1 bg-white/10 mt-2 rounded-full overflow-hidden">
+                                 <div className="h-full bg-red-500" style={{ width: '84%' }}></div>
+                              </div>
+                           </div>
+                           <div className="bg-white/5 p-3 rounded-lg border border-white/5">
+                              <div className="text-[8px] opacity-40 uppercase mb-1">Spin Factor</div>
+                              <div className="text-[12px] font-mono text-white">0.84 a*</div>
+                              <div className="w-full h-1 bg-white/10 mt-2 rounded-full overflow-hidden">
+                                 <div className="h-full bg-orange-500" style={{ width: '84%' }}></div>
+                              </div>
+                           </div>
+                        </div>
+
+                        <h3 className="text-[8px] font-mono text-white/40 uppercase mb-3 text-right">Stellar Census Distribution</h3>
+                        <div className="h-40 w-full">
+                           <ResponsiveContainer width="100%" height="100%">
+                              <LineChart data={[
+                                 { name: 'HIP', val: 40000 },
+                                 { name: 'GAIA', val: 25000 },
+                                 { name: '2MASS', val: 10000 },
+                                 { name: 'VAR', val: 3500 }
+                              ]}>
+                                 <CartesianGrid strokeDasharray="3 3" stroke="#ffffff05" vertical={false} />
+                                 <XAxis dataKey="name" hide />
+                                 <YAxis hide />
+                                 <Tooltip 
+                                    contentStyle={{ background: '#000', border: '1px solid rgba(255,255,255,0.1)', fontSize: '8px' }}
+                                    itemStyle={{ color: '#ef4444' }}
+                                 />
+                                 <Line type="monotone" dataKey="val" stroke="#ef4444" strokeWidth={2} dot={{ fill: '#ef4444', r: 3 }} />
+                              </LineChart>
+                           </ResponsiveContainer>
+                        </div>
+                        <div className="grid grid-cols-4 gap-1 mt-2">
+                           {['HIP', 'GAIA', '2MASS', 'VAR'].map(l => (
+                              <div key={l} className="text-[7px] text-center opacity-30 font-mono">{l}</div>
+                           ))}
+                        </div>
+                      </div>
+
+                       <div className="glass-panel p-5 rounded-xl border-l-4 border-emerald-500 shadow-xl shadow-emerald-500/5">
+                        <h2 className="text-[10px] font-mono text-emerald-400 uppercase tracking-[0.4em] mb-4">BH Classification</h2>
+                        <div className="space-y-4">
+                           <div className="flex items-baseline gap-2">
+                              <span className="text-2xl font-mono text-white">{bhClass.type}</span>
+                              <span className="text-[9px] font-mono opacity-50 uppercase">{bhClass.desc}</span>
+                           </div>
+                           <p className="text-[8px] font-mono opacity-60 leading-relaxed uppercase">
+                              Path: {pathway} module // {pathway === 'galactic' ? 'Regulating host galaxy cool gas accretion.' : 'Standalone singularity metrics applied.'}
+                           </p>
+                        </div>
+                      </div>
+
+                      <div className="glass-panel p-5 rounded-xl border-cyan-500/30">
+                        <h2 className="text-[9px] font-mono text-cyan-400 uppercase tracking-[0.2em] mb-4">4D Topology Matrix</h2>
+                        <div className="grid grid-cols-2 gap-2">
+                           {['Tesseract', 'Hypersphere', '3-Torus', 'Klein-X'].map(shape => (
+                              <button 
+                                key={shape}
+                                onClick={() => setShow4D(!show4D)}
+                                className={`p-3 border rounded-lg text-[8px] font-mono uppercase transition-all ${show4D ? 'bg-cyan-500/20 border-cyan-500 text-cyan-400' : 'bg-white/5 border-white/5 text-white/50 hover:bg-white/10'}`}
+                              >
+                                {shape}
+                              </button>
+                           ))}
+                        </div>
+                      </div>
+
+                      {/* M-Sigma Correlation Graph */}
+                      <div className="glass-panel p-5 rounded-xl h-64 shadow-inner">
+                         <h2 className="text-[10px] font-mono text-emerald-400 uppercase tracking-[0.4em] mb-4">M-Sigma Correlation</h2>
+                         <div className="w-full h-48 opacity-80">
+                            <ResponsiveContainer width="100%" height="100%">
+                               <LineChart data={[
+                                  { sigma: 100, mass: 6.5 },
+                                  { sigma: 150, mass: 7.2 },
+                                  { sigma: 200, mass: 8.0 },
+                                  { sigma: 250, mass: 8.8 },
+                                  { sigma: 300, mass: 9.5 }
+                               ]}>
+                                  <CartesianGrid strokeDasharray="3 3" stroke="#ffffff11" vertical={false} />
+                                  <XAxis dataKey="sigma" stroke="#ffffff22" fontSize={8} tickFormatter={(v) => `${v} km/s`} />
+                                  <YAxis stroke="#ffffff22" fontSize={8} label={{ value: 'log(M)', angle: -90, position: 'insideLeft', fontSize: 6 }} />
+                                  <Tooltip 
+                                    contentStyle={{ background: '#000', border: '1px solid #ffffff11', fontSize: '8px' }}
+                                    itemStyle={{ color: '#10b981' }}
+                                  />
+                                  <Line type="monotone" dataKey="mass" stroke="#10b981" dot={{ r: 2, fill: '#10b981' }} />
+                                  <Line data={[{ sigma: 100 + mass * 2, mass: Math.log10(mass * 1e7) }]} type="monotone" dataKey="mass" stroke="#f97316" dot={{ r: 4, fill: '#f97316' }} />
+                               </LineChart>
+                            </ResponsiveContainer>
+                         </div>
+                      </div>
+                    </motion.div>
+                  )}
+                </AnimatePresence>
+              </motion.section>
+            </>
+          )}
+        </AnimatePresence>
+
+        <div className="flex-1"></div>
+
+        {/* Desktop-Only Stats Panel */}
+        <AnimatePresence>
+          {showUI && (
+            <motion.section 
+              initial={{ x: 100, opacity: 0 }}
+              animate={{ x: 0, opacity: 1 }}
+              exit={{ x: 100, opacity: 0 }}
+              className="hidden lg:flex w-80 p-6 z-20 flex-col gap-4 items-end pointer-events-auto"
+            >
+              {/* Existing Right Sidebar Content remains here for desktop */}
+              <div className="glass-panel p-6 rounded-xl w-full">
+                <div className="text-right mb-6">
+                  <div className="text-4xl font-mono leading-none tracking-tight font-light">{schRadius}</div>
+                  <div className="text-[9px] font-mono text-white/40 uppercase tracking-widest mt-2">Schwarzschild Radius (km)</div>
+                </div>
+                <div className="grid grid-cols-2 gap-4 border-t border-white/5 pt-6">
+                  <div className="space-y-1">
+                    <div className="text-[14px] font-mono">{(1 + spin * 0.5).toFixed(2)}c</div>
+                    <div className="text-[8px] font-mono text-white/40 uppercase tracking-tighter">Frame Dragging</div>
+                  </div>
+                  <div className="text-right space-y-1">
+                    <div className="text-[14px] font-mono text-orange-400">Active</div>
+                    <div className="text-[8px] font-mono text-white/40 uppercase tracking-tighter">Grav-Lensing</div>
+                  </div>
+                </div>
+              </div>
+
+              <div className="w-full flex-1 flex flex-col gap-3">
+                <div className="h-40 w-full glass-panel rounded-xl relative overflow-hidden">
+                  <div className="absolute bottom-0 left-0 w-full h-1/2 flex items-end gap-1 px-3 pb-3">
+                    {[40, 60, 30, 80, 50, 90, 45, 70, 35, 85].map((h, i) => (
+                      <motion.div 
+                        key={i}
+                        initial={{ height: 0 }}
+                        animate={{ height: `${h}%` }}
+                        transition={{ repeat: Infinity, duration: 1.5, repeatType: 'reverse', delay: i * 0.1 }}
+                        className="bg-orange-500/30 w-full rounded-t-sm"
+                      />
+                    ))}
+                  </div>
+                  <div className="absolute inset-0 p-4">
+                    <span className="text-[9px] font-mono opacity-40 uppercase tracking-widest text-white/60">Radiative Energy Flux</span>
+                  </div>
+                </div>
+              </div>
+            </motion.section>
+          )}
+        </AnimatePresence>
+      </main>
+
+      {/* Footer */}
+      <footer className="h-20 glass-panel border-t-0 border-x-0 border-b-0 flex items-center px-8 justify-between z-30 pointer-events-auto">
+        <div className="flex gap-4">
+          <button 
+            className="px-6 py-2.5 bg-orange-500 text-black text-[11px] font-bold uppercase tracking-[0.2em] rounded hover:bg-orange-400 transition-colors shadow-[0_0_20px_rgba(249,115,22,0.3)]"
+            onClick={() => { setMass(10.0); setSpin(0.8); setDistance(50.0); setRayMaxDepth(1200); }}
+          >
+            Reset Metrics
+          </button>
+          <button className="px-6 py-2.5 border border-white/10 text-white/70 text-[11px] font-bold uppercase tracking-[0.2em] rounded hover:bg-white/5 hover:text-white transition-all">
+            Export Data
+          </button>
+        </div>
+        <div className="flex flex-col items-end gap-2">
+          <div className="flex gap-1.5">
+            {[1, 2, 3, 4].map(i => (
+              <div key={i} className={`w-1.5 h-1.5 ${i === 1 ? 'bg-orange-500 shadow-[0_0_5px_rgba(249,115,22,0.5)]' : 'bg-white/20'}`}></div>
+            ))}
+          </div>
+          <span className="text-[9px] font-mono text-white/30 uppercase tracking-widest hidden sm:inline">
+            COORDINATES: RA 17h 45m 40s | Dec −29° 00′ 28″ (Sagittarius A*)
+          </span>
+        </div>
+      </footer>
+
+      {/* Scanning Lines Effect overlay */}
+      <div className="absolute inset-0 pointer-events-none z-50 opacity-[0.03] overflow-hidden mix-blend-overlay">
+        <div className="absolute inset-0 bg-[linear-gradient(rgba(18,16,16,0)_50%,rgba(0,0,0,0.25)_50%),linear-gradient(90deg,rgba(255,0,0,0.06),rgba(0,255,0,0.02),rgba(0,0,255,0.06))] bg-[length:100%_4px,3px_100%]" />
+      </div>
+      
+      <style>{`
+        .scrollbar-hide::-webkit-scrollbar { display: none; }
+        .scrollbar-hide { -ms-overflow-style: none; scrollbar-width: none; }
+      `}</style>
+    </div>
+  );
+}

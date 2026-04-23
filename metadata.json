@@ -1,0 +1,6 @@
+{
+  "name": "Remix: Event Horizon: Black Hole Simulator",
+  "description": "High-fidelity black hole visualization with gravitational lensing and accretion disk simulation.",
+  "requestFramePermissions": [],
+  "majorCapabilities": []
+}
