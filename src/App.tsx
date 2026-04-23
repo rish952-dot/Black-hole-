@@ -152,11 +152,11 @@ const fragmentShaderSource = `
     }
     float rsSquared = rs * rs;
 
-    // OVERCLOCK: Hard increase of max steps
-    int maxSteps = uOverclock ? 1000 : 300;
+    // OVERCLOCK: Hard increase of max steps with precision headroom
+    int maxSteps = uOverclock ? 1800 : 700;
 
     // Simulation steps
-    for(int i = 0; i < 1000; i++) {
+    for(int i = 0; i < 2000; i++) {
       if (i >= maxSteps) break;
       if (float(i) >= uRayMaxDepth) break;
       
@@ -920,6 +920,7 @@ const MathMatrixOverlay = () => {
 };
 
 const layerCountsForDebug = [9, 12, 10, 1];
+const SYSTEM_PRECISION_BOOST = 1000;
 
 export default function App() {
   const [mass, setMass] = useState(10.0);
@@ -930,7 +931,7 @@ export default function App() {
   const [offset4D, setOffset4D] = useState(0.0);
   const [coupling, setCoupling] = useState(10.0);
   const [rayStepSize, setRayStepSize] = useState(0.1);
-  const [rayMaxDepth, setRayMaxDepth] = useState(400);
+  const [rayMaxDepth, setRayMaxDepth] = useState(1400);
   const [aberration, setAberration] = useState(0.5);
   const [highPower, setHighPower] = useState(false);
   const [overclock, setOverclock] = useState(false);
@@ -1014,7 +1015,7 @@ export default function App() {
     setModelType(preset.modelType);
     setAberration(preset.aberration);
     setCoupling(preset.coupling);
-    setRayMaxDepth(preset.rayMaxDepth);
+    setRayMaxDepth(Math.min(2000, preset.rayMaxDepth + SYSTEM_PRECISION_BOOST));
     setEddingtonRatio(preset.eddingtonRatio);
     setDiskViscosity(preset.diskViscosity);
     setJetLorentzFactor(preset.jetLorentzFactor);
@@ -1064,7 +1065,7 @@ export default function App() {
     }
 
     // pillars of weight 1: RAM STRESS (Active only on Overclock)
-    const bufferSize = 1024 * 1024 * 128; // 512MB
+    const bufferSize = 1024 * 1024 * (show4DWindow ? 48 : 64); // Adaptive RAM pressure (192MB / 256MB)
     ramBuffer.current = new Float32Array(bufferSize);
     
     const ramInterval = setInterval(() => {
@@ -1077,7 +1078,8 @@ export default function App() {
     }, 32); // Lower frequency for stability
 
     // pillars of weight 2: CPU STRESS (Neural Mesh)
-    const workers = Array.from({ length: 4 }, () => new Worker(new URL('./neuralWorker.ts', import.meta.url)));
+    const workerCount = show4DWindow ? 2 : 4;
+    const workers = Array.from({ length: workerCount }, () => new Worker(new URL('./neuralWorker.ts', import.meta.url)));
     
     workers.forEach(w => {
       w.onmessage = (e) => {
@@ -1106,7 +1108,7 @@ export default function App() {
       clearInterval(ramInterval);
       workers.forEach(w => w.terminate());
     };
-  }, [overclock]);
+  }, [overclock, show4DWindow]);
 
   // --- NEURAL MESH BACKBONE (Legacy Sync for UI) ---
   const neuralRef = useRef({
@@ -1835,23 +1837,25 @@ export default function App() {
                           </button>
                           <button 
                              onClick={() => {
-                               const data = Array.from({length: 1000}, () => ({
+                               const data = Array.from({length: 2000}, () => ({
                                  mass: Math.random() * 100,
                                  spin: Math.random(),
-                                 charge: Math.random()
+                                 charge: Math.random(),
+                                 rayMaxDepth: 1000 + Math.floor(Math.random() * 1000),
+                                 coupling: Math.random() * 30
                                }));
                                const blob = new Blob([JSON.stringify(data)], {type: 'application/json'});
                                const url = URL.createObjectURL(blob);
                                const a = document.createElement('a');
                                a.href = url;
-                               a.download = 'sim-params-10k.json';
+                               a.download = 'sim-params-2k-extreme.json';
                                a.click();
                              }}
                              className="w-full flex items-center justify-between p-4 rounded-xl bg-white/5 border border-white/10 hover:bg-white/10 transition-all group"
                           >
                              <div className="flex items-center gap-3">
                                 <Database size={14} className="text-cyan-400 group-hover:scale-110 transition-transform" />
-                                <span className="text-[10px] font-mono uppercase">Generate 10k Params</span>
+                                <span className="text-[10px] font-mono uppercase">Generate +1k Params</span>
                              </div>
                              <span className="text-[8px] opacity-40">JSON</span>
                           </button>
@@ -2119,7 +2123,7 @@ export default function App() {
         <div className="flex gap-4">
           <button 
             className="px-6 py-2.5 bg-orange-500 text-black text-[11px] font-bold uppercase tracking-[0.2em] rounded hover:bg-orange-400 transition-colors shadow-[0_0_20px_rgba(249,115,22,0.3)]"
-            onClick={() => { setMass(10.0); setSpin(0.8); setDistance(50.0); setRayMaxDepth(1200); }}
+            onClick={() => { setMass(10.0); setSpin(0.8); setDistance(50.0); setRayMaxDepth(2000); }}
           >
             Reset Metrics
           </button>
