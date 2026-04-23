@@ -1,7 +1,9 @@
 import React, { useRef, useEffect, useState } from 'react';
-import { Settings, Info, Zap, Maximize2, RefreshCw, Layers, Activity, Eye, Cpu, Database, Share2, Binary, Wind, Star, Camera, Thermometer } from 'lucide-react';
+import { Settings, Zap, Maximize2, RefreshCw, Activity, Eye, Cpu, Database, Wind, Star, Camera, Box } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
+import { FourDPanel } from './FourDPanel';
+import { RESEARCH_PRESETS, CATEGORY_COLORS, CATEGORY_LABELS, type BHPreset } from './presets';
 
 // --- SHADERS ---
 
@@ -960,6 +962,79 @@ export default function App() {
   const [tdePeak, setTdePeak] = useState(0.0);
   const [isTDEActive, setIsTDEActive] = useState(false);
 
+  // --- 4D WINDOW ---
+  const [show4DWindow, setShow4DWindow] = useState(false);
+
+  // --- ADVANCED PHYSICS PARAMETERS (research-grade precision) ---
+  // Accretion disc physics (DST/TDE papers)
+  const [eddingtonRatio, setEddingtonRatio] = useState(0.1);        // λ = L/L_Edd
+  const [diskViscosity, setDiskViscosity] = useState(0.12);          // α-viscosity (Shakura-Sunyaev)
+  const [diskAspectRatio, setDiskAspectRatio] = useState(0.05);      // H/R disk thickness
+  const [massOutflowRate, setMassOutflowRate] = useState(0.05);      // fraction of infalling mass ejected
+  const [impactParameter, setImpactParameter] = useState(1.0);       // β tidal disruption impact
+  const [windVelocity, setWindVelocity] = useState(0.05);            // disk wind speed (fraction of c)
+
+  // Relativistic jet (AGN/radio-mode papers)
+  const [jetLorentzFactor, setJetLorentzFactor] = useState(1.0);     // bulk Lorentz factor Γ
+  const [jetOpeningAngle, setJetOpeningAngle] = useState(5.0);       // half-opening angle (deg)
+  const [agnFeedbackEff, setAgnFeedbackEff] = useState(0.0);         // mechanical feedback efficiency ε
+
+  // Host galaxy / galactic environment (Nature/M-sigma papers)
+  const [stellarDispersion, setStellarDispersion] = useState(100.0); // σ stellar velocity (km/s)
+  const [mSigmaAlpha, setMSigmaAlpha] = useState(4.24);              // M-σ power law index
+  const [hotHaloTemp, setHotHaloTemp] = useState(5e7);               // hot gas halo temperature (K)
+  const [darkMatterConc, setDarkMatterConc] = useState(10.0);        // NFW concentration parameter
+
+  // Binary merger / gravitational waves (LIGO/Caltech papers)
+  const [massRatio, setMassRatio] = useState(1.0);                   // q = M₂/M₁ ≤ 1
+  const [chirpMass, setChirpMass] = useState(28.3);                  // chirp mass (M☉)
+  const [orbitalEcc, setOrbitalEcc] = useState(0.0);                 // orbital eccentricity
+  const [finalMergerSpin, setFinalMergerSpin] = useState(0.67);      // Bowen-York final spin
+
+  // S-star orbits (Keck/UCLA/GRAVITY papers)
+  const [s2OrbitalPeriod] = useState(16.0455);                       // S2 period (years) — fixed
+  const [s2Eccentricity, setS2Eccentricity] = useState(0.8843);      // S2 eccentricity (GRAVITY 2018)
+
+  // Active preset tracking
+  const [activePreset, setActivePreset] = useState<string | null>(null);
+
+  // Advanced section toggle
+  const [showAdvancedPhysics, setShowAdvancedPhysics] = useState(false);
+
+  // Load preset function
+  const loadPreset = (preset: BHPreset) => {
+    setMass(preset.mass);
+    setSpin(preset.spin);
+    setCharge(preset.charge);
+    setDistance(preset.distance);
+    setDiskIntensity(preset.diskIntensity);
+    setExposure(preset.exposure);
+    setFrameDrag(preset.frameDrag);
+    setDarkMatter(preset.darkMatter);
+    setModelType(preset.modelType);
+    setAberration(preset.aberration);
+    setCoupling(preset.coupling);
+    setRayMaxDepth(preset.rayMaxDepth);
+    setEddingtonRatio(preset.eddingtonRatio);
+    setDiskViscosity(preset.diskViscosity);
+    setJetLorentzFactor(preset.jetLorentzFactor);
+    setStellarDispersion(preset.stellarDispersion);
+    setImpactParameter(preset.impactParameter);
+    setDiskAspectRatio(preset.diskAspectRatio);
+    setMassOutflowRate(preset.massOutflowRate);
+    setAgnFeedbackEff(preset.agnFeedbackEff);
+    setMassRatio(preset.massRatio);
+    setChirpMass(preset.chirpMass);
+    setOrbitalEcc(preset.orbitalEcc);
+    setS2Eccentricity(preset.orbitalEcc > 0 ? preset.orbitalEcc : s2Eccentricity);
+    setDarkMatterConc(preset.darkMatterConc);
+    setMSigmaAlpha(preset.mSigmaAlpha > 0 ? preset.mSigmaAlpha : mSigmaAlpha);
+    setActivePreset(preset.shortName);
+    if (preset.category === 'tde') setPathway('tde');
+    else if (preset.category === 'galactic' || preset.category === 'agn') setPathway('galactic');
+    else setPathway('standard');
+  };
+
   // Classification Logic from PDF
   const getClassification = (m: number) => {
     if (m < 5.0) return { type: "SBH", desc: "Stellar-Mass" };
@@ -1217,6 +1292,13 @@ export default function App() {
           <span>GPU: {rayMaxDepth}-Depth Metric</span>
         </div>
         <div className="flex items-center gap-4">
+          <button
+            onClick={() => setShow4DWindow(v => !v)}
+            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[10px] font-semibold transition-all border ${show4DWindow ? 'bg-purple-600/30 border-purple-500/50 text-purple-300 shadow-[0_0_12px_rgba(139,92,246,0.3)]' : 'bg-white/5 border-white/10 text-white/50 hover:text-purple-300 hover:border-purple-500/30'}`}
+          >
+            <Box size={12} />
+            4D Space
+          </button>
           <button 
             onClick={() => {
               if (!document.fullscreenElement) {
@@ -1264,21 +1346,21 @@ export default function App() {
                 </div>
 
                 {/* Unified Tab Controller */}
-                <div className="flex justify-between glass-panel p-1.5 rounded-xl mb-2 flex-shrink-0">
+                <div className="flex justify-between glass-panel p-1 rounded-xl mb-2 flex-shrink-0 gap-0.5">
                   {[
-                    { id: 'physics', icon: <Zap size={14} />, label: 'PHY' },
-                    { id: 'optics', icon: <Eye size={14} />, label: 'OPT' },
-                    { id: 'engine', icon: <Cpu size={14} />, label: 'ENG' },
-                    { id: 'neural', icon: <Activity size={14} />, label: 'DAT' },
-                    { id: 'research', icon: <Database size={14} />, label: 'RES' }
+                    { id: 'physics', icon: <Zap size={12} />, label: 'Physics' },
+                    { id: 'optics', icon: <Eye size={12} />, label: 'Optics' },
+                    { id: 'engine', icon: <Cpu size={12} />, label: 'Engine' },
+                    { id: 'neural', icon: <Activity size={12} />, label: 'Data' },
+                    { id: 'research', icon: <Database size={12} />, label: 'Info' }
                   ].map(tab => (
                     <button
                       key={tab.id}
                       onClick={() => setActiveTab(tab.id as any)}
-                      className={`flex-1 flex flex-col items-center py-2 rounded-lg transition-all ${activeTab === tab.id ? 'bg-orange-500 text-black shadow-lg shadow-orange-500/20' : 'text-white/40 hover:bg-white/5'}`}
+                      className={`flex-1 flex flex-col items-center py-2 px-1 rounded-lg transition-all ${activeTab === tab.id ? 'bg-gradient-to-b from-orange-500 to-orange-600 text-black shadow-lg shadow-orange-500/25' : 'text-white/35 hover:text-white/70 hover:bg-white/5'}`}
                     >
                       {tab.icon}
-                      <span className="text-[7px] mt-1 font-bold">{tab.label}</span>
+                      <span className="text-[8px] mt-0.5 font-semibold">{tab.label}</span>
                     </button>
                   ))}
                 </div>
@@ -1293,9 +1375,10 @@ export default function App() {
                       className="space-y-4"
                     >
                       <div className="glass-panel p-5 rounded-xl">
-                        <h2 className="text-[9px] font-mono text-orange-400 uppercase tracking-[0.2em] mb-6 flex items-center gap-2">
-                           Geodesic Constants
-                        </h2>
+                        <div className="mb-6">
+                          <h2 className="text-sm font-semibold text-white/80">Geodesic Parameters</h2>
+                          <p className="text-[10px] text-white/30 mt-0.5">Kerr metric &amp; spacetime constants</p>
+                        </div>
                         <div className="space-y-6">
                           <div className="space-y-3">
                             <div className="flex justify-between text-[10px] font-mono">
@@ -1387,6 +1470,186 @@ export default function App() {
                           </div>
                         )}
                       </div>
+
+                      {/* Advanced Physics Accordion */}
+                      <div className="glass-panel rounded-xl overflow-hidden">
+                        <button
+                          onClick={() => setShowAdvancedPhysics(v => !v)}
+                          className="w-full p-5 flex items-center justify-between text-left hover:bg-white/3 transition-all"
+                        >
+                          <div>
+                            <div className="text-sm font-semibold text-white/80">Advanced Physics</div>
+                            <div className="text-[10px] text-white/35 mt-0.5">Research-grade parameters from published papers</div>
+                          </div>
+                          <motion.div
+                            animate={{ rotate: showAdvancedPhysics ? 180 : 0 }}
+                            transition={{ duration: 0.2 }}
+                            className="text-white/30"
+                          >
+                            ↓
+                          </motion.div>
+                        </button>
+
+                        <AnimatePresence>
+                          {showAdvancedPhysics && (
+                            <motion.div
+                              initial={{ height: 0, opacity: 0 }}
+                              animate={{ height: 'auto', opacity: 1 }}
+                              exit={{ height: 0, opacity: 0 }}
+                              transition={{ duration: 0.3 }}
+                              className="overflow-hidden"
+                            >
+                              <div className="px-5 pb-5 space-y-6 border-t border-white/5">
+
+                                {/* Accretion Disc — Shakura-Sunyaev */}
+                                <div className="pt-5">
+                                  <div className="flex items-center gap-2 mb-4">
+                                    <div className="w-1.5 h-1.5 rounded-full bg-orange-400" />
+                                    <span className="text-xs font-semibold text-orange-400">Accretion Disc</span>
+                                    <span className="text-[9px] text-white/25">Shakura-Sunyaev α-disk model</span>
+                                  </div>
+                                  <div className="space-y-4">
+                                    {[
+                                      { label: 'Eddington Ratio  λ = L/L_Edd', val: eddingtonRatio, set: setEddingtonRatio, min: 0.0001, max: 15.0, step: 0.0001, color: 'orange', fmt: (v: number) => v.toFixed(4) },
+                                      { label: 'α-Viscosity (Shakura-Sunyaev)', val: diskViscosity, set: setDiskViscosity, min: 0.001, max: 0.5, step: 0.001, color: 'orange', fmt: (v: number) => v.toFixed(3) },
+                                      { label: 'Disk Aspect Ratio  H/R', val: diskAspectRatio, set: setDiskAspectRatio, min: 0.001, max: 0.5, step: 0.001, color: 'orange', fmt: (v: number) => v.toFixed(3) },
+                                      { label: 'Mass Outflow Rate  ṁ_out', val: massOutflowRate, set: setMassOutflowRate, min: 0.0, max: 1.0, step: 0.005, color: 'orange', fmt: (v: number) => v.toFixed(3) },
+                                      { label: 'Disk Wind Speed  (v/c)', val: windVelocity, set: setWindVelocity, min: 0.0, max: 0.95, step: 0.001, color: 'orange', fmt: (v: number) => v.toFixed(3) },
+                                      { label: 'TDE Impact Parameter  β', val: impactParameter, set: setImpactParameter, min: 0.1, max: 8.0, step: 0.01, color: 'orange', fmt: (v: number) => v.toFixed(2) },
+                                    ].map(p => (
+                                      <div key={p.label} className="space-y-2">
+                                        <div className="flex justify-between">
+                                          <span className="text-[10px] text-white/40">{p.label}</span>
+                                          <span className={`text-[10px] font-mono text-${p.color}-400`}>{p.fmt(p.val)}</span>
+                                        </div>
+                                        <input type="range" min={p.min} max={p.max} step={p.step} value={p.val} onChange={e => p.set(parseFloat(e.target.value))} className={`w-full h-0.5 bg-white/10 rounded-full appearance-none cursor-pointer accent-${p.color}-500`} />
+                                      </div>
+                                    ))}
+                                  </div>
+                                </div>
+
+                                {/* Relativistic Jet */}
+                                <div className="pt-4 border-t border-white/5">
+                                  <div className="flex items-center gap-2 mb-4">
+                                    <div className="w-1.5 h-1.5 rounded-full bg-cyan-400" />
+                                    <span className="text-xs font-semibold text-cyan-400">Relativistic Jet</span>
+                                    <span className="text-[9px] text-white/25">AGN radio-mode feedback</span>
+                                  </div>
+                                  <div className="space-y-4">
+                                    {[
+                                      { label: 'Bulk Lorentz Factor  Γ', val: jetLorentzFactor, set: setJetLorentzFactor, min: 1.0, max: 30.0, step: 0.01, fmt: (v: number) => v.toFixed(2) },
+                                      { label: 'Jet Opening Angle  θ (deg)', val: jetOpeningAngle, set: setJetOpeningAngle, min: 0.5, max: 30.0, step: 0.1, fmt: (v: number) => v.toFixed(1) + '°' },
+                                      { label: 'Mechanical Feedback Eff.  ε', val: agnFeedbackEff, set: setAgnFeedbackEff, min: 0.0, max: 0.4, step: 0.001, fmt: (v: number) => v.toFixed(3) },
+                                    ].map(p => (
+                                      <div key={p.label} className="space-y-2">
+                                        <div className="flex justify-between">
+                                          <span className="text-[10px] text-white/40">{p.label}</span>
+                                          <span className="text-[10px] font-mono text-cyan-400">{p.fmt(p.val)}</span>
+                                        </div>
+                                        <input type="range" min={p.min} max={p.max} step={p.step} value={p.val} onChange={e => p.set(parseFloat(e.target.value))} className="w-full h-0.5 bg-white/10 rounded-full appearance-none cursor-pointer accent-cyan-500" />
+                                      </div>
+                                    ))}
+                                  </div>
+                                </div>
+
+                                {/* Host Galaxy / M-σ relation */}
+                                <div className="pt-4 border-t border-white/5">
+                                  <div className="flex items-center gap-2 mb-4">
+                                    <div className="w-1.5 h-1.5 rounded-full bg-violet-400" />
+                                    <span className="text-xs font-semibold text-violet-400">Host Galaxy</span>
+                                    <span className="text-[9px] text-white/25">M-σ correlation · NFW halo</span>
+                                  </div>
+                                  <div className="space-y-4">
+                                    {[
+                                      { label: 'Stellar Velocity Disp.  σ (km/s)', val: stellarDispersion, set: setStellarDispersion, min: 30, max: 450, step: 0.5, fmt: (v: number) => v.toFixed(1) },
+                                      { label: 'M-σ Power-Law Index  α', val: mSigmaAlpha, set: setMSigmaAlpha, min: 3.5, max: 6.0, step: 0.001, fmt: (v: number) => v.toFixed(3) },
+                                      { label: 'NFW Concentration  c', val: darkMatterConc, set: setDarkMatterConc, min: 1.0, max: 40.0, step: 0.1, fmt: (v: number) => v.toFixed(1) },
+                                      { label: 'Hot Gas Halo Temp.  T (10⁷ K)', val: hotHaloTemp / 1e7, set: (v: number) => setHotHaloTemp(v * 1e7), min: 0.1, max: 30.0, step: 0.01, fmt: (v: number) => v.toFixed(2) + '×10⁷' },
+                                    ].map(p => (
+                                      <div key={p.label} className="space-y-2">
+                                        <div className="flex justify-between">
+                                          <span className="text-[10px] text-white/40">{p.label}</span>
+                                          <span className="text-[10px] font-mono text-violet-400">{p.fmt(p.val)}</span>
+                                        </div>
+                                        <input type="range" min={p.min} max={p.max} step={p.step} value={p.val} onChange={e => p.set(parseFloat(e.target.value))} className="w-full h-0.5 bg-white/10 rounded-full appearance-none cursor-pointer accent-violet-500" />
+                                      </div>
+                                    ))}
+                                    {/* Derived M-σ mass */}
+                                    <div className="mt-2 p-3 rounded-lg bg-violet-900/10 border border-violet-500/15">
+                                      <div className="text-[9px] text-white/30 mb-1">M-σ Predicted BH Mass</div>
+                                      <div className="text-[11px] font-mono text-violet-300">
+                                        {(3.1e8 * Math.pow(stellarDispersion / 200, mSigmaAlpha)).toExponential(2)} M☉
+                                      </div>
+                                      <div className="text-[8px] text-white/20 mt-0.5">Kormendy &amp; Ho 2013, Eq. 3</div>
+                                    </div>
+                                  </div>
+                                </div>
+
+                                {/* Binary Merger / GW */}
+                                <div className="pt-4 border-t border-white/5">
+                                  <div className="flex items-center gap-2 mb-4">
+                                    <div className="w-1.5 h-1.5 rounded-full bg-rose-400" />
+                                    <span className="text-xs font-semibold text-rose-400">Binary Merger</span>
+                                    <span className="text-[9px] text-white/25">LIGO/Virgo GW parameters</span>
+                                  </div>
+                                  <div className="space-y-4">
+                                    {[
+                                      { label: 'Mass Ratio  q = M₂/M₁', val: massRatio, set: setMassRatio, min: 0.01, max: 1.0, step: 0.001, fmt: (v: number) => v.toFixed(3) },
+                                      { label: 'Chirp Mass  ℳ (M☉)', val: chirpMass, set: setChirpMass, min: 1.0, max: 150.0, step: 0.01, fmt: (v: number) => v.toFixed(2) },
+                                      { label: 'Orbital Eccentricity  e', val: orbitalEcc, set: setOrbitalEcc, min: 0.0, max: 0.999, step: 0.001, fmt: (v: number) => v.toFixed(3) },
+                                      { label: 'Final Merger Spin  a_f', val: finalMergerSpin, set: setFinalMergerSpin, min: 0.0, max: 0.998, step: 0.001, fmt: (v: number) => v.toFixed(3) },
+                                    ].map(p => (
+                                      <div key={p.label} className="space-y-2">
+                                        <div className="flex justify-between">
+                                          <span className="text-[10px] text-white/40">{p.label}</span>
+                                          <span className="text-[10px] font-mono text-rose-400">{p.fmt(p.val)}</span>
+                                        </div>
+                                        <input type="range" min={p.min} max={p.max} step={p.step} value={p.val} onChange={e => p.set(parseFloat(e.target.value))} className="w-full h-0.5 bg-white/10 rounded-full appearance-none cursor-pointer accent-rose-500" />
+                                      </div>
+                                    ))}
+                                    {/* GW frequency */}
+                                    <div className="mt-2 p-3 rounded-lg bg-rose-900/10 border border-rose-500/15">
+                                      <div className="text-[9px] text-white/30 mb-1">ISCO GW Frequency</div>
+                                      <div className="text-[11px] font-mono text-rose-300">
+                                        {chirpMass > 0 ? (4400 / (chirpMass / Math.pow(massRatio * (1 + massRatio) ** 2, 0.6))).toFixed(0) : '—'} Hz
+                                      </div>
+                                      <div className="text-[8px] text-white/20 mt-0.5">f_ISCO ≈ 4400 / (M_total/M☉) Hz</div>
+                                    </div>
+                                  </div>
+                                </div>
+
+                                {/* S-star / Galactic Centre */}
+                                <div className="pt-4 border-t border-white/5">
+                                  <div className="flex items-center gap-2 mb-4">
+                                    <div className="w-1.5 h-1.5 rounded-full bg-amber-400" />
+                                    <span className="text-xs font-semibold text-amber-400">S-Star Orbits</span>
+                                    <span className="text-[9px] text-white/25">Keck/UCLA · GRAVITY Collab.</span>
+                                  </div>
+                                  <div className="space-y-4">
+                                    <div className="space-y-2">
+                                      <div className="flex justify-between">
+                                        <span className="text-[10px] text-white/40">S2 Eccentricity  e_S2</span>
+                                        <span className="text-[10px] font-mono text-amber-400">{s2Eccentricity.toFixed(4)}</span>
+                                      </div>
+                                      <input type="range" min={0.1} max={0.999} step={0.0001} value={s2Eccentricity} onChange={e => setS2Eccentricity(parseFloat(e.target.value))} className="w-full h-0.5 bg-white/10 rounded-full appearance-none cursor-pointer accent-amber-500" />
+                                    </div>
+                                    <div className="p-3 rounded-lg bg-amber-900/10 border border-amber-500/15">
+                                      <div className="grid grid-cols-2 gap-2 text-[9px]">
+                                        <div><span className="text-white/25">Orbital Period</span><div className="font-mono text-amber-300 mt-0.5">{s2OrbitalPeriod.toFixed(4)} yr</div></div>
+                                        <div><span className="text-white/25">Eccentricity</span><div className="font-mono text-amber-300 mt-0.5">{s2Eccentricity.toFixed(4)}</div></div>
+                                        <div><span className="text-white/25">Precession (GR)</span><div className="font-mono text-amber-300 mt-0.5">11.9 ± 1.9'</div></div>
+                                        <div><span className="text-white/25">Data Source</span><div className="font-mono text-amber-300 mt-0.5">GRAVITY 2020</div></div>
+                                      </div>
+                                    </div>
+                                  </div>
+                                </div>
+
+                              </div>
+                            </motion.div>
+                          )}
+                        </AnimatePresence>
+                      </div>
+
                     </motion.div>
                   )}
 
@@ -1399,7 +1662,10 @@ export default function App() {
                       className="space-y-4"
                     >
                       <div className="glass-panel p-5 rounded-xl">
-                        <h2 className="text-[9px] font-mono text-cyan-400 uppercase tracking-[0.2em] mb-6">Light Field Properties</h2>
+                        <div className="mb-6">
+                          <h2 className="text-sm font-semibold text-white/80">Light Field</h2>
+                          <p className="text-[10px] text-cyan-400/60 mt-0.5">Photon path rendering &amp; optics</p>
+                        </div>
                         <div className="space-y-6">
                            <div className="space-y-3">
                             <div className="flex justify-between text-[10px] font-mono">
@@ -1455,7 +1721,10 @@ export default function App() {
                       className="space-y-4"
                     >
                       <div className="glass-panel p-5 rounded-xl">
-                        <h2 className="text-[9px] font-mono text-blue-400 uppercase tracking-[0.2em] mb-6">Computation Matrix</h2>
+                        <div className="mb-6">
+                          <h2 className="text-sm font-semibold text-white/80">Computation</h2>
+                          <p className="text-[10px] text-blue-400/60 mt-0.5">Ray-march engine &amp; research presets</p>
+                        </div>
                         <div className="space-y-4">
                           <div className="flex flex-col gap-3">
                             <button onClick={() => setHighPower(!highPower)} className={`w-full flex items-center justify-between p-3 rounded-lg border transition-all ${highPower ? 'bg-blue-500/20 border-blue-500 text-blue-400' : 'bg-white/5 border-white/10 text-white/40'}`}>
@@ -1468,9 +1737,44 @@ export default function App() {
                             </button>
                           </div>
                           
-                          <div className="grid grid-cols-2 gap-2 pt-2">
-                            <button onClick={() => { setMass(1.2); setSpin(0.9); setDistance(6.5); setAberration(0.3); setRayMaxDepth(200); }} className="bg-white/5 border border-white/10 p-2 rounded text-[8px] font-mono hover:bg-white/10 transition-all uppercase">NASA A*</button>
-                            <button onClick={() => { setMass(2.2); setSpin(0.7); setDistance(10.0); setAberration(0.1); setRayMaxDepth(250); }} className="bg-white/5 border border-white/10 p-2 rounded text-[8px] font-mono hover:bg-white/10 transition-all uppercase">ESA M87*</button>
+                          {/* Research-Grade Presets */}
+                          <div className="pt-2">
+                            <div className="text-[10px] font-medium text-white/40 mb-3">Research Presets</div>
+                            <div className="space-y-2">
+                              {RESEARCH_PRESETS.map(preset => {
+                                const catColor = CATEGORY_COLORS[preset.category];
+                                const isActive = activePreset === preset.shortName;
+                                return (
+                                  <button
+                                    key={preset.shortName}
+                                    onClick={() => loadPreset(preset)}
+                                    className={`w-full p-3 rounded-xl border text-left transition-all group ${isActive ? 'border-orange-500/50 bg-orange-500/10' : 'border-white/8 bg-white/4 hover:bg-white/8 hover:border-white/15'}`}
+                                  >
+                                    <div className="flex items-start justify-between gap-2">
+                                      <div className="flex-1 min-w-0">
+                                        <div className="flex items-center gap-2 mb-0.5">
+                                          <span
+                                            className="text-[9px] font-semibold px-1.5 py-0.5 rounded-md"
+                                            style={{ background: catColor + '22', color: catColor, border: `1px solid ${catColor}44` }}
+                                          >
+                                            {CATEGORY_LABELS[preset.category]}
+                                          </span>
+                                          <span className="text-[9px] text-white/30">{preset.year}</span>
+                                        </div>
+                                        <div className="text-[11px] font-semibold text-white/90">{preset.name}</div>
+                                        <div className="text-[9px] text-white/35 mt-0.5 leading-relaxed line-clamp-2">{preset.description.substring(0, 80)}...</div>
+                                      </div>
+                                      <div className="text-right shrink-0">
+                                        <div className="text-[9px] text-white/30">M = {preset.mass.toFixed(1)}</div>
+                                        <div className="text-[9px] text-white/30">a* = {preset.spin.toFixed(2)}</div>
+                                        <div className="text-[8px] text-white/20 mt-1">{preset.realMassSolar}</div>
+                                      </div>
+                                    </div>
+                                    <div className="text-[8px] text-white/25 mt-1.5 font-medium">{preset.source}</div>
+                                  </button>
+                                );
+                              })}
+                            </div>
                           </div>
                         </div>
                       </div>
@@ -1834,6 +2138,19 @@ export default function App() {
           </span>
         </div>
       </footer>
+
+      {/* 4D Floating Window */}
+      <AnimatePresence>
+        {show4DWindow && (
+          <FourDPanel
+            mass={mass}
+            spin={spin}
+            offset4D={offset4D}
+            coupling={coupling}
+            onClose={() => setShow4DWindow(false)}
+          />
+        )}
+      </AnimatePresence>
 
       {/* Scanning Lines Effect overlay */}
       <div className="absolute inset-0 pointer-events-none z-50 opacity-[0.03] overflow-hidden mix-blend-overlay">
