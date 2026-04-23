@@ -483,7 +483,11 @@ const BlackHoleCanvas = ({
         antialias: false, 
         powerPreference: "high-performance",
         preserveDrawingBuffer: false
-    })!;
+    });
+    if (!gl) {
+      console.error('WebGL context unavailable — simulation disabled.');
+      return;
+    }
     glRef.current = gl;
 
     const setupWorkers = () => {
@@ -679,6 +683,216 @@ const BlackHoleCanvas = ({
   );
 };
 
+// --- 3D MESH DEBUG VISUALIZER ---
+const MeshDebug3D = ({ nRef, meshData }: { nRef: any; meshData: any }) => {
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const rotRef = useRef({ x: -0.35, y: 0.4, dragging: false, lx: 0, ly: 0 });
+  const animRef = useRef<number>(0);
+  const layerCounts = [9, 12, 10, 1];
+  const LAYER_Z = 2.2;
+  const NODE_Y = 0.75;
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+
+    const nodes3D = layerCounts.flatMap((count, li) =>
+      Array.from({ length: count }, (_, ni) => ({
+        x: (li - (layerCounts.length - 1) / 2) * LAYER_Z,
+        y: (ni - (count - 1) / 2) * NODE_Y,
+        z: 0,
+        li,
+        ni,
+      }))
+    );
+
+    const project = (x: number, y: number, z: number, rx: number, ry: number, cw: number, ch: number) => {
+      const cy = Math.cos(ry), sy = Math.sin(ry);
+      const x1 = x * cy - z * sy;
+      const z1 = x * sy + z * cy;
+      const cx2 = Math.cos(rx), sx2 = Math.sin(rx);
+      const y1 = y * cx2 - z1 * sx2;
+      const z2 = y * sx2 + z1 * cx2;
+      const fov = 260;
+      const d = z2 + 9;
+      return { px: (x1 * fov) / d + cw / 2, py: (y1 * fov) / d + ch / 2, depth: z2 };
+    };
+
+    const resize = () => {
+      canvas.width = canvas.offsetWidth * window.devicePixelRatio;
+      canvas.height = canvas.offsetHeight * window.devicePixelRatio;
+      ctx.scale(window.devicePixelRatio, window.devicePixelRatio);
+    };
+    resize();
+
+    const draw = () => {
+      const rot = rotRef.current;
+      if (!rot.dragging) rot.y += 0.007;
+
+      const W = canvas.offsetWidth;
+      const H = canvas.offsetHeight;
+      ctx.clearRect(0, 0, W, H);
+
+      const n = nRef.current;
+      const md = meshData.current;
+
+      const proj = nodes3D.map(node => ({
+        ...node,
+        ...project(node.x, node.y, node.z, rot.x, rot.y, W, H),
+      }));
+
+      const layerLabels = ['INPUT', 'HIDDEN-1', 'HIDDEN-2', 'OUTPUT'];
+      const layerColors = ['#06b6d4', '#10b981', '#a78bfa', '#f97316'];
+
+      layerCounts.slice(0, -1).forEach((cc, li) => {
+        const cur = proj.filter(p => p.li === li);
+        const nxt = proj.filter(p => p.li === li + 1);
+        cur.forEach(cp => {
+          nxt.forEach(np => {
+            const w = Math.sin(li * 7 + cp.ni * np.ni + 1.3);
+            const act = (n.activity[cp.ni % 9] || 0) as number;
+            const isAct = w > 0.6 || act > 0.5;
+            ctx.beginPath();
+            ctx.moveTo(cp.px, cp.py);
+            ctx.lineTo(np.px, np.py);
+            ctx.strokeStyle = isAct
+              ? `rgba(16,185,129,${isAct ? 0.35 : 0.04})`
+              : `rgba(239,68,68,${Math.max(0.02, Math.abs(w) * 0.1)})`;
+            ctx.lineWidth = isAct ? 0.7 : 0.25;
+            ctx.stroke();
+          });
+        });
+        for (let i = 0; i < cc - 1; i++) {
+          const a = proj.find(p => p.li === li && p.ni === i);
+          const b = proj.find(p => p.li === li && p.ni === i + 1);
+          if (a && b) {
+            ctx.beginPath();
+            ctx.moveTo(a.px, a.py);
+            ctx.lineTo(b.px, b.py);
+            ctx.strokeStyle = `rgba(255,255,255,0.04)`;
+            ctx.lineWidth = 0.4;
+            ctx.stroke();
+          }
+        }
+      });
+      for (let i = 0; i < layerCounts[layerCounts.length - 1] - 1; i++) {
+        const a = proj.find(p => p.li === layerCounts.length - 1 && p.ni === i);
+        const b = proj.find(p => p.li === layerCounts.length - 1 && p.ni === i + 1);
+        if (a && b) {
+          ctx.beginPath();
+          ctx.moveTo(a.px, a.py);
+          ctx.lineTo(b.px, b.py);
+          ctx.strokeStyle = `rgba(255,255,255,0.04)`;
+          ctx.lineWidth = 0.4;
+          ctx.stroke();
+        }
+      }
+
+      const sorted = [...proj].sort((a, b) => b.depth - a.depth);
+      sorted.forEach(node => {
+        const act = (n.activity[node.ni % 9] || 0) as number;
+        const rawMesh = md?.nodes ? md.nodes[node.ni * 20] : 0;
+        const meshVal = isNaN(rawMesh) ? 0 : rawMesh;
+        const simState = (n.state[node.ni % 9] || 0) as number;
+        const isAct = act > 0.5 || meshVal > 0.5;
+        const r = Math.max(2, 4.5 - node.depth * 0.15);
+        const col = layerColors[node.li];
+
+        if (isAct) {
+          const grd = ctx.createRadialGradient(node.px, node.py, 0, node.px, node.py, r * 4);
+          grd.addColorStop(0, col.replace(')', ',0.4)').replace('rgb', 'rgba'));
+          grd.addColorStop(1, 'rgba(0,0,0,0)');
+          ctx.fillStyle = grd;
+          ctx.beginPath();
+          ctx.arc(node.px, node.py, r * 4, 0, Math.PI * 2);
+          ctx.fill();
+        }
+
+        ctx.beginPath();
+        ctx.arc(node.px, node.py, r, 0, Math.PI * 2);
+        ctx.fillStyle = isAct ? col : 'rgba(255,255,255,0.12)';
+        ctx.fill();
+        ctx.strokeStyle = isAct ? col + '88' : 'rgba(255,255,255,0.08)';
+        ctx.lineWidth = 1;
+        ctx.stroke();
+
+        if (r > 3) {
+          ctx.fillStyle = `rgba(255,255,255,${isAct ? 0.65 : 0.2})`;
+          ctx.font = '6px monospace';
+          ctx.fillText(meshVal.toFixed(2), node.px + r + 2, node.py + 2);
+          ctx.fillStyle = `rgba(255,255,255,0.12)`;
+          ctx.fillText(`s:${simState.toFixed(1)}`, node.px + r + 2, node.py + 9);
+        }
+      });
+
+      layerCounts.forEach((_, li) => {
+        const ln = proj.filter(p => p.li === li);
+        if (!ln.length) return;
+        const ax = ln.reduce((s, p) => s + p.px, 0) / ln.length;
+        const my = Math.min(...ln.map(p => p.py));
+        ctx.fillStyle = layerColors[li] + '99';
+        ctx.font = 'bold 7px monospace';
+        ctx.textAlign = 'center';
+        ctx.fillText(layerLabels[li], ax, my - 10);
+        ctx.fillStyle = 'rgba(255,255,255,0.15)';
+        ctx.font = '6px monospace';
+        ctx.fillText(`N=${layerCounts[li]}`, ax, my - 3);
+        ctx.textAlign = 'left';
+      });
+
+      animRef.current = requestAnimationFrame(draw);
+    };
+    draw();
+
+    const onDown = (e: MouseEvent) => {
+      rotRef.current.dragging = true;
+      rotRef.current.lx = e.clientX;
+      rotRef.current.ly = e.clientY;
+    };
+    const onMove = (e: MouseEvent) => {
+      if (!rotRef.current.dragging) return;
+      rotRef.current.y += (e.clientX - rotRef.current.lx) * 0.012;
+      rotRef.current.x += (e.clientY - rotRef.current.ly) * 0.012;
+      rotRef.current.lx = e.clientX;
+      rotRef.current.ly = e.clientY;
+    };
+    const onUp = () => { rotRef.current.dragging = false; };
+
+    canvas.addEventListener('mousedown', onDown);
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('mouseup', onUp);
+
+    return () => {
+      cancelAnimationFrame(animRef.current);
+      canvas.removeEventListener('mousedown', onDown);
+      window.removeEventListener('mousemove', onMove);
+      window.removeEventListener('mouseup', onUp);
+    };
+  }, []);
+
+  return (
+    <div className="relative w-full bg-black/60 rounded-xl border border-white/5 overflow-hidden" style={{ height: 288 }}>
+      <canvas ref={canvasRef} className="w-full h-full cursor-grab active:cursor-grabbing" style={{ display: 'block' }} />
+      <div className="absolute top-2 left-3 text-[7px] font-mono text-white/30 uppercase tracking-widest pointer-events-none">
+        3D Mesh Debug · Drag to Rotate
+      </div>
+      <div className="absolute bottom-2 left-3 flex gap-4 pointer-events-none">
+        {[['#06b6d4', 'Input'], ['#10b981', 'Hidden-1'], ['#a78bfa', 'Hidden-2'], ['#f97316', 'Output']].map(([c, l]) => (
+          <span key={l} className="flex items-center gap-1 text-[6px] font-mono text-white/30">
+            <span className="w-1.5 h-1.5 rounded-full inline-block" style={{ background: c }} />
+            {l}
+          </span>
+        ))}
+      </div>
+      <div className="absolute top-2 right-3 text-[6px] font-mono text-white/20 uppercase pointer-events-none">
+        Node values: mesh · s: sim-state
+      </div>
+    </div>
+  );
+};
+
 // --- QUANTUM MATH OVERLAY (Scientific PDF Formulas) ---
 const MathMatrixOverlay = () => {
   return (
@@ -702,6 +916,8 @@ const MathMatrixOverlay = () => {
     </div>
   );
 };
+
+const layerCountsForDebug = [9, 12, 10, 1];
 
 export default function App() {
   const [mass, setMass] = useState(10.0);
@@ -731,6 +947,7 @@ export default function App() {
   const [starCount, setStarCount] = useState(500000);
   const [charge, setCharge] = useState(0.0);
   const [activeTab, setActiveTab] = useState<'physics' | 'optics' | 'engine' | 'neural' | 'research'>('physics');
+  const [datView, setDatView] = useState<'net' | 'mesh'>('net');
   
   // Speed Modulation States
   const [timeScale, setTimeScale] = useState(1.0);
@@ -983,6 +1200,7 @@ export default function App() {
           frameDrag={frameDrag}
           darkMatter={darkMatter}
           modelType={modelType}
+          show4D={show4D}
         />
       </div>
 
@@ -1358,9 +1576,57 @@ export default function App() {
                          </div>
                       </div>
 
-                      <div className="glass-panel p-5 rounded-xl">
-                        <NeuralNerveSystem nRef={neuralRef} meshData={meshData} />
+                      {/* DAT View Toggle */}
+                      <div className="flex p-1 bg-white/5 rounded-xl border border-white/5 gap-1">
+                        {([
+                          { id: 'net', label: 'Neural Net', icon: '⬡' },
+                          { id: 'mesh', label: '3D Mesh Debug', icon: '◈' },
+                        ] as const).map(v => (
+                          <button
+                            key={v.id}
+                            onClick={() => setDatView(v.id)}
+                            className={`flex-1 py-2 flex items-center justify-center gap-1.5 text-[8px] font-mono uppercase tracking-widest rounded-lg transition-all ${datView === v.id ? 'bg-orange-500 text-black shadow-lg shadow-orange-500/20' : 'opacity-40 hover:opacity-80 text-white'}`}
+                          >
+                            <span>{v.icon}</span>
+                            <span>{v.label}</span>
+                          </button>
+                        ))}
                       </div>
+
+                      {datView === 'net' ? (
+                        <div className="glass-panel p-5 rounded-xl">
+                          <NeuralNerveSystem nRef={neuralRef} meshData={meshData} />
+                        </div>
+                      ) : (
+                        <div className="glass-panel p-3 rounded-xl">
+                          <div className="flex items-center justify-between mb-2 px-1">
+                            <h2 className="text-[9px] font-mono text-orange-400 uppercase tracking-[0.2em]">3D Node Mesh · Assessment Model</h2>
+                            <div className="flex gap-2 text-[7px] font-mono text-white/30">
+                              <span className="px-1.5 py-0.5 rounded bg-white/5 border border-white/5">{layerCountsForDebug.reduce((a, b) => a + b, 0)} nodes</span>
+                              <span className="px-1.5 py-0.5 rounded bg-white/5 border border-white/5">Live</span>
+                            </div>
+                          </div>
+                          <MeshDebug3D nRef={neuralRef} meshData={meshData} />
+                          <div className="mt-3 grid grid-cols-3 gap-2 text-[7px] font-mono">
+                            {['Mass', 'Spin', 'Disk', 'Dist', 'Coupling', 'Aberr'].map((label, i) => {
+                              const val = neuralRef.current.state[i] ?? 0;
+                              const act = neuralRef.current.activity[i] ?? 0;
+                              return (
+                                <div key={label} className="bg-black/40 rounded-lg p-2 border border-white/5">
+                                  <div className="text-white/30 uppercase tracking-wider mb-1">{label}</div>
+                                  <div className="text-orange-400 font-bold">{(typeof val === 'number' ? val : 0).toFixed(2)}</div>
+                                  <div className="w-full h-0.5 bg-white/10 rounded-full mt-1.5 overflow-hidden">
+                                    <div
+                                      className="h-full bg-orange-500 transition-all duration-300"
+                                      style={{ width: `${Math.min(100, Math.abs(typeof act === 'number' ? act : 0) * 100)}%` }}
+                                    />
+                                  </div>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      )}
                       
                       <div className="glass-panel p-5 rounded-xl flex-1 overflow-hidden relative group h-48 sm:h-auto">
                         <div className="absolute inset-0 p-5 overflow-y-auto scrollbar-hide">
