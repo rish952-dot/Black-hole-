@@ -1,6 +1,6 @@
 import React, { useRef, useEffect, useState, useCallback } from 'react';
 import { motion } from 'motion/react';
-import { X, Minus, Maximize2 } from 'lucide-react';
+import { X, Minus } from 'lucide-react';
 
 interface FourDPanelProps {
   mass: number;
@@ -49,23 +49,10 @@ function project3Dto2D(v: [number, number, number], eye_z: number, cx: number, c
   return [cx + v[0] * scale * f, cy + v[1] * scale * f];
 }
 
-// Spacetime node worker computation (inline, non-blocking)
-function computeSpacetimeNodes(mass: number, spin: number, t: number, gridSize: number): { x: number; y: number; curv: number }[] {
-  const pts: { x: number; y: number; curv: number }[] = [];
-  for (let i = 0; i < gridSize; i++) {
-    for (let j = 0; j < gridSize; j++) {
-      const px = (i / (gridSize - 1) - 0.5) * 4;
-      const py = (j / (gridSize - 1) - 0.5) * 4;
-      const r2 = px * px + py * py + 0.01;
-      const r = Math.sqrt(r2);
-      const rs = mass * 0.25;
-      const kerrTerm = spin * rs * Math.sin(t * 0.3) / (r2 + 0.1);
-      const curv = rs / r + kerrTerm * 0.3;
-      pts.push({ x: px, y: py, curv: Math.min(1, Math.max(-0.5, curv)) });
-    }
-  }
-  return pts;
-}
+type SpacetimeNode = { x: number; y: number; curv: number };
+
+const SPACETIME_GRID_SIZE = 12;
+const OVERLAP_DAMPING = 0.72;
 
 export const FourDPanel: React.FC<FourDPanelProps> = ({ mass, spin, offset4D, coupling, onClose }) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -74,6 +61,10 @@ export const FourDPanel: React.FC<FourDPanelProps> = ({ mass, spin, offset4D, co
   const dragRef = useRef({ dragging: false, lx: 0, ly: 0, rx: 0.3, ry: 0.5 });
   const panelRef = useRef<HTMLDivElement>(null);
   const panelDragRef = useRef({ dragging: false, startX: 0, startY: 0, panelX: 0, panelY: 0 });
+  const workerRef = useRef<Worker | null>(null);
+  const workerBusyRef = useRef(false);
+  const spacetimeNodesRef = useRef<SpacetimeNode[]>([]);
+  const lastWorkerTickRef = useRef(0);
 
   const [pos, setPos] = useState({ x: window.innerWidth / 2 - 300, y: 60 });
   const [minimized, setMinimized] = useState(false);
@@ -81,6 +72,27 @@ export const FourDPanel: React.FC<FourDPanelProps> = ({ mass, spin, offset4D, co
 
   const paramsRef = useRef({ mass, spin, offset4D, coupling });
   useEffect(() => { paramsRef.current = { mass, spin, offset4D, coupling }; }, [mass, spin, offset4D, coupling]);
+
+  useEffect(() => {
+    const worker = new Worker(new URL('./fourDWorker.ts', import.meta.url));
+    worker.onmessage = (e: MessageEvent<{ mode: string; packed: Float32Array }>) => {
+      if (e.data.mode !== 'FOUR_D_NODES') return;
+      const packed = e.data.packed;
+      const nodes: SpacetimeNode[] = [];
+      for (let i = 0; i < packed.length; i += 3) {
+        nodes.push({ x: packed[i], y: packed[i + 1], curv: packed[i + 2] });
+      }
+      spacetimeNodesRef.current = nodes;
+      workerBusyRef.current = false;
+    };
+
+    workerRef.current = worker;
+    return () => {
+      worker.terminate();
+      workerRef.current = null;
+      workerBusyRef.current = false;
+    };
+  }, []);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -189,9 +201,23 @@ export const FourDPanel: React.FC<FourDPanelProps> = ({ mass, spin, offset4D, co
 
       } else if (mode === 'spacetime') {
         // --- 4D SPACETIME CURVATURE GRID ---
-        const GRID = 12;
-        const nodes = computeSpacetimeNodes(p.mass, p.spin, t, GRID);
+        if (!workerBusyRef.current && workerRef.current && t - lastWorkerTickRef.current > 0.03) {
+          workerBusyRef.current = true;
+          lastWorkerTickRef.current = t;
+          workerRef.current.postMessage({ mode: 'FOUR_D_TICK', mass: p.mass, spin: p.spin, t, gridSize: SPACETIME_GRID_SIZE });
+        }
+
+        const GRID = SPACETIME_GRID_SIZE;
+        const nodes = spacetimeNodesRef.current;
         const scale = Math.min(W, H) / 5.5;
+
+        if (nodes.length !== GRID * GRID) {
+          ctx.fillStyle = 'rgba(255,255,255,0.35)';
+          ctx.font = '11px monospace';
+          ctx.fillText('Initializing 4D parallel network…', 12, 20);
+          animRef.current = requestAnimationFrame(draw);
+          return;
+        }
 
         // Draw curved grid lines
         for (let i = 0; i < GRID; i++) {
@@ -199,8 +225,8 @@ export const FourDPanel: React.FC<FourDPanelProps> = ({ mass, spin, offset4D, co
           for (let j = 0; j < GRID; j++) {
             const n = nodes[i * GRID + j];
             const curv = n.curv;
-            const px = cx + n.x * scale + Math.sin(t * 0.5 + i) * curv * 8;
-            const py = cy + n.y * scale + curv * 20;
+            const px = cx + n.x * scale + Math.sin(t * 0.5 + i) * curv * (8 * OVERLAP_DAMPING);
+            const py = cy + n.y * scale + curv * (20 * OVERLAP_DAMPING);
             j === 0 ? ctx.moveTo(px, py) : ctx.lineTo(px, py);
           }
           const grad = ctx.createLinearGradient(cx - W / 2, 0, cx + W / 2, 0);
@@ -217,8 +243,8 @@ export const FourDPanel: React.FC<FourDPanelProps> = ({ mass, spin, offset4D, co
           for (let i = 0; i < GRID; i++) {
             const n = nodes[i * GRID + j];
             const curv = n.curv;
-            const px = cx + n.x * scale + Math.sin(t * 0.5 + j) * curv * 8;
-            const py = cy + n.y * scale + curv * 20;
+            const px = cx + n.x * scale + Math.sin(t * 0.5 + j) * curv * (8 * OVERLAP_DAMPING);
+            const py = cy + n.y * scale + curv * (20 * OVERLAP_DAMPING);
             i === 0 ? ctx.moveTo(px, py) : ctx.lineTo(px, py);
           }
           ctx.strokeStyle = 'rgba(99,102,241,0.2)';
@@ -229,8 +255,8 @@ export const FourDPanel: React.FC<FourDPanelProps> = ({ mass, spin, offset4D, co
         // Nodes with curvature glow
         nodes.forEach(n => {
           if (n.curv < 0.1) return;
-          const px = cx + n.x * scale + Math.sin(t * 0.5) * n.curv * 8;
-          const py = cy + n.y * scale + n.curv * 20;
+          const px = cx + n.x * scale + Math.sin(t * 0.5) * n.curv * (8 * OVERLAP_DAMPING);
+          const py = cy + n.y * scale + n.curv * (20 * OVERLAP_DAMPING);
           const r = 1.5 + n.curv * 4;
 
           if (n.curv > 0.5) {
@@ -269,7 +295,7 @@ export const FourDPanel: React.FC<FourDPanelProps> = ({ mass, spin, offset4D, co
         ctx.font = '8px monospace';
         ctx.fillText(`Spacetime Curvature — 4D projection (z→w)`, 12, 18);
         ctx.fillStyle = 'rgba(255,255,255,0.2)';
-        ctx.fillText(`M=${p.mass.toFixed(1)} (sim)  a=${p.spin.toFixed(3)}  r_s=${(p.mass * 0.25).toFixed(2)}`, 12, 30);
+        ctx.fillText(`M=${p.mass.toFixed(1)} (sim)  a=${p.spin.toFixed(3)}  r_s=${(p.mass * 0.25).toFixed(2)}  damping=${OVERLAP_DAMPING.toFixed(2)}`, 12, 30);
 
       } else {
         // --- PENROSE DIAGRAM (Conformal causal structure) ---
