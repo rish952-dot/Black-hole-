@@ -1,7 +1,10 @@
 import React, { useRef, useEffect, useState } from 'react';
-import { Settings, Info, Zap, Maximize2, RefreshCw, Layers, Activity, Eye, Cpu, Database, Share2, Binary, Wind, Star, Camera, Thermometer } from 'lucide-react';
+import { Settings, Info, Zap, Maximize2, RefreshCw, Layers, Activity, Eye, Cpu, Database, Share2, Binary, Wind, Star, Camera, Thermometer, Network, IterationCcw, Focus, Download } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
+import { NeuralMeshEngine } from './NeuralMeshEngine';
+import { useNeuralDataPipeline } from './NeuralDataPipeline';
+import { globalPhysicsEngine } from './PhysicsEngine';
 
 // --- SHADERS ---
 
@@ -40,9 +43,23 @@ const fragmentShaderSource = `
   uniform bool uShowMatrix;
   uniform bool uShow4D;
   uniform bool uThermalMode;
+  uniform bool uNegativeMode;
+  uniform bool uTopographyMesh;
   uniform float uFrameDrag;
   uniform float uDarkMatter;
   uniform int uModelType; // 0:Schwarz, 1:Kerr, 2:RN, 3:KN
+  uniform float uGWPhase;
+  uniform float uGWAmplitude;
+  uniform float uGWFreq;
+  uniform vec3 uGWSource;
+
+  uniform float uHorizonRadius;
+
+  uniform float uFrozen;
+  uniform float uFrozenGlow;
+  uniform float uMotionBlur;
+  uniform float uEdgeHighlight;
+  uniform float uSpinRipple;
 
   #define PI 3.14159265359
 
@@ -140,18 +157,13 @@ const fragmentShaderSource = `
     vec3 color = vec3(0.0);
     float diskAccum = 0.0;
     bool eventHorizon = false;
+    float shadowStrength = 0.0;
 
-    float rs = uMass * 0.5; // Schwarzschild radius
-    
-    // Model specific metrics
-    if (uModelType == 2 || uModelType == 3) {
-        float q2 = uCharge * uCharge;
-        rs = 0.5 * (uMass + sqrt(max(0.0, uMass * uMass - q2)));
-    }
+    float rs = uHorizonRadius;
     float rsSquared = rs * rs;
 
     // OVERCLOCK: Hard increase of max steps
-    int maxSteps = uOverclock ? 1000 : 300;
+    int maxSteps = uOverclock ? 1000 : 400;
 
     // Simulation steps
     for(int i = 0; i < 1000; i++) {
@@ -162,17 +174,33 @@ const fragmentShaderSource = `
       float r = sqrt(r2);
       if (r < rs) { eventHorizon = true; break; }
 
+      // --- Black Hole Shadow / Photon Capture region ---
+      if (r < rs * 1.5) {
+           shadowStrength += (1.0 - smoothstep(rs, rs * 1.5, r)) * 0.15;
+           if (r < rs * 1.02) { eventHorizon = true; break; }
+      }
+
       // Frame Dragging (Simulated Lense-Thirring effect)
-      if (uFrameDrag > 0.0) {
-          float draggingStrength = uFrameDrag * (rs / (r + 0.1));
+      if (uFrameDrag > 0.0 || uSpin != 0.0) {
+          float draggingStrength = max(uFrameDrag, abs(uSpin)) * (rs / (r + 0.1));
           vec3 axis = vec3(0.0, 1.0, 0.0); // Spin axis
-          rd = normalize(rd + cross(axis, p) * draggingStrength * 0.1);
+          rd = normalize(rd + cross(axis, p) * draggingStrength * 0.1 * sign(uSpin + 0.001));
       }
 
       // Gravitational deflection physics (Schwarzschild approximation)
       vec3 toCenter = -p / r;
       float deflection = (3.0 * rsSquared) / (r2 * r + 0.1); 
       rd = normalize(rd + toCenter * deflection);
+      
+      // Gravitational Wave Ripple
+      // Lensing distortion via spatial wave originating from a localized source
+      if (uGWAmplitude > 0.0) {
+          float distToGW = distance(p, uGWSource); 
+          float gWave = sin(distToGW * uGWFreq - uGWPhase) * exp(-abs(distToGW) * 0.5) * uGWAmplitude;
+          // Apply directional perturbation outward from source
+          vec3 waveDir = normalize(p - uGWSource);
+          rd = normalize(rd + waveDir * (gWave * 1.5));
+      }
       
       // GPU SUFFERING: Extreme Volumetric Integration Pass
       if (uOverclock) {
@@ -184,18 +212,34 @@ const fragmentShaderSource = `
           }
       }
 
-      p += rd * uRayStep * (r * 0.4); 
+      // Adaptive step size (smaller near horizon for precision)
+      float stepSize = uRayStep * mix(0.1, 0.5, clamp((r - rs) * 0.5, 0.0, 1.0));
+      p += rd * stepSize * (r * 0.4); 
 
-      // Accretion Disk intersection
-      if (uShowDisk && abs(p.y) < 0.08 && r > rs * 2.5 && r < rs * 10.0) {
-          float diskPos = (r - rs * 2.5) / (rs * 7.5);
+      // Accretion Disk intersection (with proper relativistic physics)
+      if (uShowDisk && abs(p.y) < 0.15 && r > rs * 2.0 && r < rs * 15.0) {
+          float diskPos = clamp((r - rs * 2.0) / (rs * 13.0), 0.0, 1.0);
+          
+          // Density of the disk cross-section
+          float diskDens = smoothstep(0.15, 0.0, abs(p.y));
+          
           float brightness = exp(-diskPos * 5.0) * uDiskIntensity;
           
-          // TDE Outflow / Peak Brightness (Image 2 Influence)
-          brightness *= (1.0 + uTDEPeak * 50.0);
+          // Relativistic Doppler Shift Calculation
+          vec3 diskVel = normalize(cross(vec3(0.0, 1.0, 0.0), p)); 
+          float orbitalV = sqrt(rs / max(r, 0.1));
+          diskVel *= orbitalV * (1.0 + uSpin * 2.0); 
           
-          float doppler = 1.0 + rd.x * uSpin;
-          vec3 diskColor = mix(vec3(1.0, 0.2, 0.0), vec3(0.1, 0.4, 1.0), (doppler - 0.5));
+          float doppler = dot(rd, diskVel);
+          float relativisticFactor = clamp(1.0 + doppler * 2.0, 0.2, 4.0);
+          
+          // TDE Outflow / Peak Brightness
+          brightness *= (1.0 + uTDEPeak * 50.0);
+          brightness *= pow(relativisticFactor, 3.0); // Relativistic streaming/beaming
+          
+          // Radial temperature mapping
+          vec3 heatColor = mix(vec3(2.5, 0.8, 0.2), vec3(0.1, 0.3, 0.8), diskPos);
+          vec3 diskColor = mix(heatColor, vec3(0.1, 0.5, 1.0), clamp(doppler, 0.0, 1.0)); // Blueshift
           
           // TDE specific color shift (Bluer high-energy outflow)
           if (uTDEPeak > 0.0) {
@@ -208,11 +252,34 @@ const fragmentShaderSource = `
               diskAccum += sin(uTime * 10.0 + r) * uCharge * 0.1;
           }
           
-          diskAccum += brightness;
-          color += diskColor * brightness * 0.2;
+          diskAccum += brightness * diskDens;
+          color += diskColor * brightness * diskDens * 0.2;
+      }
+
+      // Motion Accessibility Layer / Scientific Rings
+      if (abs(p.y) < 0.05 && r > rs * 2.0 && r < rs * 6.0) {
+          float ring1 = smoothstep(0.02, 0.0, abs(r - rs * 2.2));
+          float ring2 = smoothstep(0.03, 0.0, abs(r - rs * 4.5));
+          float alpha = max(ring1, ring2 * 0.5) * smoothstep(0.05, 0.0, abs(p.y));
+          color += vec3(0.5, 0.8, 1.0) * alpha * 0.8 * (1.0 + uFrozen * 2.0);
       }
       
       if (r > 40.0) break;
+    }
+
+    if (uTopographyMesh) {
+      // Calculate a distorted geodesic mesh grid based on the deflected ray
+      float theta = atan(rd.y, rd.x);
+      float phi = acos(rd.z);
+      
+      // We want to scale the grid based on gravitational distortion intensity
+      float grid1 = abs(fract(theta * 12.0 / PI) - 0.5) * 2.0;
+      float grid2 = abs(fract(phi * 12.0 / PI) - 0.5) * 2.0;
+
+      float meshLine = smoothstep(0.1, 0.05, grid1) + smoothstep(0.1, 0.05, grid2);
+      
+      vec3 meshColor = mix(vec3(0.1, 0.7, 1.0), vec3(1.0, 0.2, 0.0), 1.0 - (max(abs(rd.x), abs(rd.y))));
+      color += meshColor * meshLine * uDiskIntensity * 0.15;
     }
 
     if (!eventHorizon) {
@@ -225,11 +292,35 @@ const fragmentShaderSource = `
         }
         color += getStarfield(distortedRd);
       }
+      
+      // Apply shadow from passing near horizon
+      color *= (1.0 - clamp(shadowStrength, 0.0, 1.0));
+      
     } else {
-      color = vec3(0.0);
+      color = vec3(0.0); // Event Horizon Capture is black
     }
     
-    color += diskAccum * vec3(1.0, 0.6, 0.2);
+    // High-quality light accumulation and Photon Ring Glow
+    vec3 diskGlow = vec3(diskAccum * 0.01) * vec3(1.0, 0.7, 0.3) * uExposure;
+    color += diskGlow;
+    
+    // Intense photon ring spike just outside shadow
+    if (!eventHorizon && shadowStrength > 0.01 && shadowStrength < 0.15) {
+        float ring = (0.15 - shadowStrength) * 5.0;
+        color += vec3(1.0, 0.6, 0.2) * ring * uExposure * uDiskIntensity * 0.02;
+    }
+
+    color *= uExposure;
+
+    // Cinematic ACES Tonemapping
+    color = clamp((color * (2.51 * color + 0.03)) / (color * (2.43 * color + 0.59) + 0.14), 0.0, 1.0);
+
+    // Freeze Emphasis / Scientific visualization style
+    float frozenBoost = uFrozen * 0.6 + uFrozenGlow;
+    vec3 freezeTint = vec3(0.55, 0.75, 1.0) * frozenBoost;
+    color.rgb += freezeTint * length(color) * 0.5;
+    color.rgb += uEdgeHighlight * vec3(0.2, 0.4, 0.6) * 0.2;
+    color.rgb += uSpinRipple * abs(sin(r * 20.0 - uTime * 2.0)) * vec3(0.0, 0.1, 0.2) * (1.0 - smoothstep(0.0, 10.0, r));
 
     // Vector Dot Matrix Layer with Coupling and AI Latent influence
     if (uShowMatrix || uShow4D) {
@@ -271,6 +362,11 @@ const fragmentShaderSource = `
         else if (intensity < 0.5) outColor = mix(med, hot, (intensity - 0.25) * 4.0);
         else if (intensity < 0.75) outColor = mix(hot, ultra, (intensity - 0.5) * 4.0);
         else outColor = ultra;
+    }
+
+    if (uNegativeMode) {
+        outColor = vec3(1.0) - outColor;
+        outColor = outColor.bgr; // Psych shift
     }
 
     gl_FragColor = vec4(outColor, 1.0);
@@ -437,7 +533,8 @@ const BlackHoleCanvas = ({
   coupling, rayStepSize, rayMaxDepth, aberration, highPower, 
   overclock, charge, tdePeak, latentVector, camRot, camPos, 
   showDisk, showBackground, showMatrix, neuralRef, starCount, 
-  timeScale, thermalMode, frameDrag, darkMatter, modelType, show4D 
+  timeScale, thermalMode, frameDrag, darkMatter, modelType, show4D, negativeMode, showTopography,
+  gwPhase, gwAmplitude, gwFreq, gwSourceX, gwSourceZ
 }: any) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -455,7 +552,8 @@ const BlackHoleCanvas = ({
     rayStepSize, rayMaxDepth, aberration, highPower, overclock, 
     charge, tdePeak, latentVector, camRot, camPos, showDisk, 
     showBackground, showMatrix, starCount, timeScale, thermalMode, 
-    frameDrag, darkMatter, modelType, show4D
+    frameDrag, darkMatter, modelType, show4D, negativeMode, showTopography,
+    gwPhase, gwAmplitude, gwFreq, gwSourceX, gwSourceZ
   });
 
   useEffect(() => {
@@ -464,14 +562,16 @@ const BlackHoleCanvas = ({
       rayStepSize, rayMaxDepth, aberration, highPower, overclock, 
       charge, tdePeak, latentVector, camRot, camPos, showDisk, 
       showBackground, showMatrix, starCount, timeScale, thermalMode, 
-      frameDrag, darkMatter, modelType, show4D
+      frameDrag, darkMatter, modelType, show4D, negativeMode, showTopography,
+      gwPhase, gwAmplitude, gwFreq, gwSourceX, gwSourceZ
     };
   }, [
     mass, spin, diskIntensity, distance, exposure, offset4D, coupling, 
     rayStepSize, rayMaxDepth, aberration, highPower, overclock, 
     charge, tdePeak, latentVector, camRot, camPos, showDisk, 
     showBackground, showMatrix, starCount, timeScale, thermalMode, 
-    frameDrag, darkMatter, modelType, show4D
+    frameDrag, darkMatter, modelType, show4D, negativeMode, showTopography,
+    gwPhase, gwAmplitude, gwFreq, gwSourceX, gwSourceZ
   ]);
   
   const MAX_STARS = 10000000;
@@ -581,6 +681,12 @@ const BlackHoleCanvas = ({
       lastFrameTimeRef.current = now;
       accumulatedTimeRef.current += delta * p.timeScale;
       
+      if (p.gwAmplitude > 0) {
+          p.gwPhase += delta * 10.0;
+          p.gwAmplitude *= 0.98;
+          if (p.gwAmplitude < 0.001) p.gwAmplitude = 0;
+      }
+      
       const time = accumulatedTimeRef.current;
       const nState = neuralRef.current.state;
 
@@ -598,6 +704,8 @@ const BlackHoleCanvas = ({
       const modMass = p.mass * (nState[0] / 10.0);
       const modSpin = p.spin * (nState[1] / 0.8);
       const modDist = p.distance * (nState[3] / 50.0);
+
+      globalPhysicsEngine.updateParams(modMass, modSpin, p.charge, p.modelType);
 
       gl.uniform1f(gl.getUniformLocation(program, 'uTime'), time);
       gl.uniform2f(gl.getUniformLocation(program, 'uResolution'), canvas.width, canvas.height);
@@ -626,9 +734,23 @@ const BlackHoleCanvas = ({
       gl.uniform1i(gl.getUniformLocation(program, 'uShowMatrix'), p.showMatrix ? 1 : 0);
       gl.uniform1i(gl.getUniformLocation(program, 'uShow4D'), p.show4D ? 1 : 0);
       gl.uniform1i(gl.getUniformLocation(program, 'uThermalMode'), p.thermalMode ? 1 : 0);
+      gl.uniform1i(gl.getUniformLocation(program, 'uNegativeMode'), p.negativeMode ? 1 : 0);
+      gl.uniform1i(gl.getUniformLocation(program, 'uTopographyMesh'), p.showTopography ? 1 : 0);
       gl.uniform1f(gl.getUniformLocation(program, 'uFrameDrag'), p.frameDrag);
       gl.uniform1f(gl.getUniformLocation(program, 'uDarkMatter'), p.darkMatter);
-      gl.uniform1i(gl.getUniformLocation(program, 'uModelType'), p.modelType);
+      gl.uniform1f(gl.getUniformLocation(program, 'uModelType'), p.modelType);
+      gl.uniform1f(gl.getUniformLocation(program, 'uGWPhase'), p.gwPhase);
+      gl.uniform1f(gl.getUniformLocation(program, 'uGWAmplitude'), p.gwAmplitude);
+      gl.uniform1f(gl.getUniformLocation(program, 'uGWFreq'), p.gwFreq);
+      gl.uniform3f(gl.getUniformLocation(program, 'uGWSource'), p.gwSourceX, 0.0, p.gwSourceZ);
+      gl.uniform1f(gl.getUniformLocation(program, 'uHorizonRadius'), globalPhysicsEngine.getEventHorizon());
+
+      const frozen = p.timeScale === 0 ? 1.0 : 0.0;
+      gl.uniform1f(gl.getUniformLocation(program, 'uFrozen'), frozen);
+      gl.uniform1f(gl.getUniformLocation(program, 'uFrozenGlow'), frozen ? 0.85 : 0.0);
+      gl.uniform1f(gl.getUniformLocation(program, 'uMotionBlur'), frozen ? 0.0 : 0.6);
+      gl.uniform1f(gl.getUniformLocation(program, 'uEdgeHighlight'), frozen ? 0.7 : 0.35);
+      gl.uniform1f(gl.getUniformLocation(program, 'uSpinRipple'), frozen ? 0.15 : 1.0);
 
       gl.drawArrays(gl.TRIANGLES, 0, 3);
 
@@ -717,12 +839,14 @@ export default function App() {
   const [highPower, setHighPower] = useState(false);
   const [overclock, setOverclock] = useState(false);
   const [latentVector, setLatentVector] = useState({ x: 0.1, y: -0.2, z: 0.5 });
-  const [camRot, setCamRot] = useState({ x: 0, y: 0 });
-  const [camPos, setCamPos] = useState({ x: 0, y: 0, z: -5.0 });
+  const [camRot, setCamRot] = useState({ x: 0.28, y: 0.0 });
+  const [camPos, setCamPos] = useState({ x: 0.0, y: 2.0, z: -7.0 });
   const [showDisk, setShowDisk] = useState(true);
   const [showBackground, setShowBackground] = useState(true);
   const [showMatrix, setShowMatrix] = useState(false);
   const [thermalMode, setThermalMode] = useState(false);
+  const [negativeMode, setNegativeMode] = useState(false);
+  const [showTopography, setShowTopography] = useState(false);
   const [frameDrag, setFrameDrag] = useState(0.5);
   const [darkMatter, setDarkMatter] = useState(0.3);
   const [modelType, setModelType] = useState(1); // 1: Kerr
@@ -730,7 +854,19 @@ export default function App() {
   const [showUI, setShowUI] = useState(true);
   const [starCount, setStarCount] = useState(500000);
   const [charge, setCharge] = useState(0.0);
-  const [activeTab, setActiveTab] = useState<'physics' | 'optics' | 'engine' | 'neural' | 'research'>('physics');
+  const [activeTab, setActiveTab] = useState<'physics' | 'optics' | 'engine' | 'neural' | 'research' | 'mesh'>('physics');
+  const [showNeuralMesh, setShowNeuralMesh] = useState(false);
+  const [neuralErrorCount, setNeuralErrorCount] = useState(0);
+  const [neuralMetrics, setNeuralMetrics] = useState({ anomalyLevel: 0, globalEntropy: 0, stabilityIndex: 1 });
+  const [debugMode, setDebugMode] = useState(false);
+  const [autoHeal, setAutoHeal] = useState(true);
+  const [anomalySensitivity, setAnomalySensitivity] = useState(0.5);
+  const [gwPhase, setGwPhase] = useState(0.0);
+  const [gwAmplitude, setGwAmplitude] = useState(0.0);
+  const [gwTrigger, setGwTrigger] = useState(0);
+  const [gwFreq, setGwFreq] = useState(15.0);
+  const [gwSourceX, setGwSourceX] = useState(2.0);
+  const [gwSourceZ, setGwSourceZ] = useState(0.0);
   
   // Speed Modulation States
   const [timeScale, setTimeScale] = useState(1.0);
@@ -760,7 +896,12 @@ export default function App() {
     activity: 0
   });
 
-  const touchState = useRef({ isTouching: false, lastTouch: { x: 0, y: 0 } });
+  const touchState = useRef({ isTouching: false, lastTouch: { x: 0, y: 0 }, userHasMovedCamera: false });
+  
+  // Structural Data Pipeline
+  const dataPipelineFeed = useNeuralDataPipeline({
+      mass, spin, distance, charge, coupling, starCount, timeScale, gwFreq, gwAmplitude, modelType
+  }, 10); // Throttle
 
   useEffect(() => {
     // Stress tests only active when Overclocked
@@ -888,10 +1029,23 @@ export default function App() {
 
   // Hyper-Responsive Movement Tick (125Hz Polling)
   useEffect(() => {
+    let idleTime = 0;
     const moveTick = setInterval(() => {
         // Overclocked movement response: hold screen to move forward in look direction
-        if(!touchState.current.isTouching) return;
+        if(!touchState.current.isTouching) {
+            idleTime += 0.008;
+            if (idleTime > 2.0 && !touchState.current.userHasMovedCamera) {
+               const drift = Math.sin(idleTime * 0.2) * 0.15;
+               setCamPos(prev => ({
+                   x: prev.x + drift * 0.002,
+                   y: prev.y + drift * 0.001,
+                   z: prev.z
+               }));
+            }
+            return;
+        }
         
+        idleTime = 0;
         const speed = 0.5 * (overclock ? 3.0 : 1.0) * moveScale;
         const forward = { x: Math.sin(camRot.y), z: Math.cos(camRot.y) };
 
@@ -906,7 +1060,7 @@ export default function App() {
 
   return (
     <div 
-      className="relative w-full h-screen bg-[#050505] text-[#e0e0e0] overflow-hidden font-sans flex flex-col touch-none"
+      className="relative w-full h-screen bg-[#050505] text-[#e0e0e0] overflow-hidden overscroll-none font-sans flex flex-col touch-none"
       onTouchStart={(e) => {
         const touch = e.touches[0];
         touchState.current.lastTouch = { x: touch.clientX, y: touch.clientY };
@@ -928,6 +1082,7 @@ export default function App() {
             y: prev.y - dx * sensitivity
           }));
           touchState.current.lastTouch = { x: touch.clientX, y: touch.clientY };
+          touchState.current.userHasMovedCamera = true;
         }
       }}
       onMouseDown={(e) => {
@@ -951,6 +1106,7 @@ export default function App() {
           y: prev.y - dx * sensitivity
         }));
         touchState.current.lastTouch = { x: e.clientX, y: e.clientY };
+        touchState.current.userHasMovedCamera = true;
       }}
     >
       {/* Simulation Layer */}
@@ -983,8 +1139,27 @@ export default function App() {
           frameDrag={frameDrag}
           darkMatter={darkMatter}
           modelType={modelType}
+          negativeMode={negativeMode}
+          showTopography={showTopography}
+          gwPhase={gwPhase}
+          gwAmplitude={gwAmplitude}
+          gwFreq={gwFreq}
+          gwSourceX={gwSourceX}
+          gwSourceZ={gwSourceZ}
+          show4D={show4D}
         />
       </div>
+
+      <NeuralMeshEngine 
+        visible={showNeuralMesh}
+        simulationParams={{ mass, spin, distance, charge, coupling, starCount, timeScale, gwTrigger, pipelineFeed: dataPipelineFeed, modelType }}
+        debugMode={debugMode}
+        show4D={show4D}
+        autoHeal={autoHeal}
+        sensitivity={anomalySensitivity}
+        setErrorCount={setNeuralErrorCount}
+        setMetrics={setNeuralMetrics}
+      />
 
       {/* Header */}
       <header className="h-16 flex items-center justify-between px-8 z-20 border-b border-white/5 bg-black/40 backdrop-blur-sm pointer-events-auto">
@@ -1052,7 +1227,8 @@ export default function App() {
                     { id: 'optics', icon: <Eye size={14} />, label: 'OPT' },
                     { id: 'engine', icon: <Cpu size={14} />, label: 'ENG' },
                     { id: 'neural', icon: <Activity size={14} />, label: 'DAT' },
-                    { id: 'research', icon: <Database size={14} />, label: 'RES' }
+                    { id: 'research', icon: <Database size={14} />, label: 'RES' },
+                    { id: 'mesh', icon: <Network size={14} />, label: 'MSH' }
                   ].map(tab => (
                     <button
                       key={tab.id}
@@ -1212,7 +1388,9 @@ export default function App() {
                                { label: 'Disk', state: showDisk, toggle: setShowDisk },
                                { label: 'Stars', state: showBackground, toggle: setShowBackground },
                                { label: 'Matrix', state: showMatrix, toggle: setShowMatrix },
-                               { label: 'Thermal', state: thermalMode, toggle: setThermalMode }
+                               { label: 'Thermal', state: thermalMode, toggle: setThermalMode },
+                               { label: 'Negative', state: negativeMode, toggle: setNegativeMode },
+                               { label: 'Topo Mesh', state: showTopography, toggle: setShowTopography }
                              ].map(b => (
                                <button 
                                  key={b.label}
@@ -1483,6 +1661,108 @@ export default function App() {
                                </LineChart>
                             </ResponsiveContainer>
                          </div>
+                      </div>
+                    </motion.div>
+                  )}
+
+                      {activeTab === 'mesh' && (
+                    <motion.div 
+                      key="mesh"
+                      initial={{ opacity: 0, scale: 0.95 }}
+                      animate={{ opacity: 1, scale: 1 }}
+                      exit={{ opacity: 0, scale: 0.95 }}
+                      className="space-y-4 pointer-events-auto"
+                    >
+                      <div className="glass-panel p-5 rounded-xl border border-cyan-500/20">
+                        <div className="flex justify-between items-start mb-6">
+                           <h2 className="text-[10px] font-mono text-cyan-400 uppercase tracking-[0.2em] flex items-center gap-2">
+                             <Network size={12} />
+                             Neural Mesh v2
+                           </h2>
+                           <div className="px-2 py-0.5 rounded bg-cyan-500/10 text-cyan-400 text-[8px] font-mono uppercase border border-cyan-500/20">
+                             Active
+                           </div>
+                        </div>
+
+                        <button 
+                          onClick={() => {
+                            setShowNeuralMesh(!showNeuralMesh);
+                            // Auto hide regular stars if mesh is on for clarity
+                            if (!showNeuralMesh) setShowBackground(false);
+                          }}
+                          className={`w-full py-3 rounded-lg font-mono text-[9px] uppercase tracking-widest transition-all mb-4 ${showNeuralMesh ? 'bg-cyan-500/20 border border-cyan-500 text-cyan-300 shadow-[0_0_15px_rgba(6,182,212,0.3)]' : 'bg-white/5 text-white/50 border border-white/10 hover:bg-white/10'}`}
+                        >
+                           {showNeuralMesh ? 'Disable Topology' : 'Enable Neural Mesh'}
+                        </button>
+                        
+                        {showNeuralMesh && (
+                            <div className="space-y-4 mb-4">
+                                <div className="space-y-2">
+                                  <label className="text-[9px] font-mono uppercase text-white/50 flex justify-between">
+                                    <span>Anomaly Sensitivity</span>
+                                    <span>{anomalySensitivity.toFixed(2)}</span>
+                                  </label>
+                                  <input type="range" min="0.1" max="1.5" step="0.1" value={anomalySensitivity} onChange={e => setAnomalySensitivity(parseFloat(e.target.value))} className="w-full accent-cyan-500" />
+                                </div>
+                                <div className="grid grid-cols-2 gap-2">
+                                    <button onClick={() => setShow4D(!show4D)} className={`py-2 rounded font-mono text-[8px] uppercase border transition-colors ${show4D ? 'bg-purple-500/20 border-purple-500 text-purple-300' : 'bg-white/5 border-white/10 text-white/50'}`}>
+                                        4D Projection
+                                    </button>
+                                    <button onClick={() => setDebugMode(!debugMode)} className={`py-2 rounded font-mono text-[8px] uppercase border transition-colors ${debugMode ? 'bg-yellow-500/20 border-yellow-500 text-yellow-300' : 'bg-white/5 border-white/10 text-white/50'}`}>
+                                        Debug Mode
+                                    </button>
+                                    <button onClick={() => setAutoHeal(!autoHeal)} className={`py-2 rounded font-mono text-[8px] uppercase border transition-colors ${autoHeal ? 'bg-emerald-500/20 border-emerald-500 text-emerald-300' : 'bg-white/5 border-white/10 text-white/50'}`}>
+                                        Auto-Heal
+                                    </button>
+                                    <button onClick={() => {
+                                        setGwTrigger(prev => prev + 1);
+                                        setGwPhase(0);
+                                        // Slight boost to anomaly levels visually
+                                        setGwAmplitude(1.0);
+                                    }} className="py-2 rounded font-mono text-[8px] uppercase border bg-red-500/20 border-red-500 text-red-300 transition-colors hover:bg-red-500/40">
+                                        Trigger GW
+                                    </button>
+                                </div>
+                            </div>
+                        )}
+
+                        <div className="grid grid-cols-2 gap-3 font-mono text-[8px] uppercase text-white/60">
+                           <div className="p-3 bg-black/40 rounded-lg border border-white/5">
+                             <div className="opacity-50 mb-1">Total Nodes</div>
+                             <div className="text-cyan-400 text-sm">{show4D ? '2300' : '1500'}</div>
+                           </div>
+                           <div className="p-3 bg-black/40 rounded-lg border border-white/5">
+                             <div className="opacity-50 mb-1">Stability Idx</div>
+                             <div className="text-emerald-400 text-sm">{(neuralMetrics.stabilityIndex * 100).toFixed(1)}%</div>
+                           </div>
+                           <div className="p-3 bg-black/40 rounded-lg border border-red-500/20 col-span-2 flex justify-between items-center">
+                             <div>
+                                <div className="opacity-50 mb-1">Exceptions Flagged</div>
+                                <div className={`text-sm ${neuralErrorCount > 0 ? 'text-red-500 animate-pulse' : 'text-emerald-500'}`}>
+                                  {neuralErrorCount === 0 ? 'NOMINAL' : neuralErrorCount}
+                                </div>
+                             </div>
+                             {neuralErrorCount > 0 && <span title="Acknowledge Errors" onClick={() => setNeuralErrorCount(0)}><Focus size={16} className="text-red-500 opacity-50 cursor-pointer hover:scale-110 transition-transform" /></span>}
+                           </div>
+                        </div>
+
+                        {dataPipelineFeed && showNeuralMesh && (
+                            <div className="mt-4 p-3 border border-white/10 rounded-lg bg-white/5 font-mono text-[8px] text-white/60">
+                               <div className="uppercase mb-2 text-cyan-400">Data Pipeline Out Stream</div>
+                               <div className="grid grid-cols-2 gap-2">
+                                  <div>Nodes Mapped: <span className="text-white">{dataPipelineFeed.nodes?.length || 0}</span></div>
+                                  <div>Rel Edges: <span className="text-white">{dataPipelineFeed.edges?.length || 0}</span></div>
+                                  <div>Sys Variance: <span className="text-white">{(1.0 - dataPipelineFeed.stability).toFixed(3)}</span></div>
+                                  <div>Signals: <span className="text-white">{dataPipelineFeed.signals?.length || 0}</span></div>
+                               </div>
+                            </div>
+                        )}
+
+                        <div className="flex gap-2 mt-4">
+                           <button onClick={() => { setNeuralErrorCount(0); }} className="flex-1 py-2 bg-white/5 hover:bg-white/10 rounded border border-white/5 flex items-center justify-center gap-1 text-[8px] font-mono uppercase text-white/60">
+                             <IterationCcw size={10} /> Reset Debug
+                           </button>
+                        </div>
                       </div>
                     </motion.div>
                   )}
