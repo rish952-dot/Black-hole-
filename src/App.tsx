@@ -3,6 +3,7 @@ import { Settings, Zap, Maximize2, RefreshCw, Activity, Eye, Cpu, Database, Wind
 import { motion, AnimatePresence } from 'motion/react';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
 import { FourDPanel } from './FourDPanel';
+import { NavigatorPanel } from './NavigatorPanel';
 import { RESEARCH_PRESETS, CATEGORY_COLORS, CATEGORY_LABELS, type BHPreset } from './presets';
 
 // --- SHADERS ---
@@ -965,6 +966,9 @@ export default function App() {
   // --- 4D WINDOW ---
   const [show4DWindow, setShow4DWindow] = useState(false);
 
+  // --- NAVIGATOR PANEL ---
+  const [showNavigator, setShowNavigator] = useState(false);
+
   // --- ADVANCED PHYSICS PARAMETERS (research-grade precision) ---
   // Accretion disc physics (DST/TDE papers)
   const [eddingtonRatio, setEddingtonRatio] = useState(0.1);        // λ = L/L_Edd
@@ -1292,6 +1296,13 @@ export default function App() {
           <span>GPU: {rayMaxDepth}-Depth Metric</span>
         </div>
         <div className="flex items-center gap-4">
+          <button
+            onClick={() => setShowNavigator(v => !v)}
+            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[10px] font-semibold transition-all border ${showNavigator ? 'bg-orange-600/30 border-orange-500/50 text-orange-300 shadow-[0_0_12px_rgba(249,115,22,0.3)]' : 'bg-white/5 border-white/10 text-white/50 hover:text-orange-300 hover:border-orange-500/30'}`}
+          >
+            <Star size={12} />
+            Navigator
+          </button>
           <button
             onClick={() => setShow4DWindow(v => !v)}
             className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[10px] font-semibold transition-all border ${show4DWindow ? 'bg-purple-600/30 border-purple-500/50 text-purple-300 shadow-[0_0_12px_rgba(139,92,246,0.3)]' : 'bg-white/5 border-white/10 text-white/50 hover:text-purple-300 hover:border-purple-500/30'}`}
@@ -2151,6 +2162,35 @@ export default function App() {
           />
         )}
       </AnimatePresence>
+
+      {/* Navigator Panel — full-screen research suite */}
+      <NavigatorPanel
+        open={showNavigator}
+        onClose={() => setShowNavigator(false)}
+        simParams={{
+          mass,
+          spin,
+          diskInner: 3.0,
+          diskOuter: 12.0,
+          diskTilt: 1.05,
+          doppler: 1.0,
+          lensing: 1.0,
+          exposure,
+          steps: 180,
+          darkMatter,
+          haloScale: 20.0,
+          stringDim: 0.3,
+          frameDrag,
+          redshift: 1.0,
+          vectorScale: 1.0,
+          thermal: thermalMode ? 1.0 : 0.0,
+          darkOnly: 0.0,
+          rayBounces: 0.0,
+          eddingtonRatio,
+          diskViscosity,
+          jetLorentzFactor,
+        }}
+      />
 
       {/* Scanning Lines Effect overlay */}
       <div className="absolute inset-0 pointer-events-none z-50 opacity-[0.03] overflow-hidden mix-blend-overlay">
