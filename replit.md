@@ -1,15 +1,15 @@
 # AI Studio — Black Hole Physics Simulator
 
 ## Project Overview
-A high-performance, research-grade React web application featuring real-time black hole physics simulation with WebGL shaders. Includes Kerr/Schwarzschild/Kerr-Newman metric ray-marching, accretion disk rendering, tidal disruption events, 4D spacetime visualization, and AI-guided parameter exploration via Google Gemini.
+A high-performance, research-grade React web application featuring real-time black hole physics simulation with WebGL shaders. Includes Kerr/Schwarzschild/Kerr-Newman metric ray-marching, accretion disk rendering, tidal disruption events, 4D spacetime visualization, and a full navigator suite with LIGO event waveforms, galactic N-body simulation, neural parameter tapestry, and more.
 
 ## Tech Stack
 - **Frontend**: React 19 + TypeScript
 - **Build Tool**: Vite 6
 - **Styling**: Tailwind CSS 4
-- **AI**: Google Gemini SDK (`@google/genai`)
-- **Animations**: Framer Motion / Motion
+- **3D**: Three.js + @react-three/fiber + @react-three/drei (for navigator views)
 - **Charts**: Recharts
+- **Animations**: Framer Motion / Motion
 - **Icons**: Lucide React
 - **Package Manager**: npm
 
@@ -17,13 +17,32 @@ A high-performance, research-grade React web application featuring real-time bla
 ```
 /
 ├── src/
-│   ├── App.tsx           # Main app — WebGL shaders, UI, simulation state
-│   ├── FourDPanel.tsx    # Isolated 4D spacetime floating panel (draggable)
-│   ├── presets.ts        # 10 research-grade BH presets from published papers
-│   ├── main.tsx          # Entry point
-│   ├── index.css         # Global styles + Tailwind imports
-│   ├── neuralWorker.ts   # Web Worker — neural network calculations
-│   └── physicsWorker.ts  # Web Worker — geodesic physics calculations
+│   ├── App.tsx               # Main app — WebGL shaders, UI, simulation state (~2180 lines)
+│   ├── FourDPanel.tsx        # Isolated 4D spacetime floating panel (draggable)
+│   ├── NavigatorPanel.tsx    # Full-screen navigator panel with 10 research views
+│   ├── presets.ts            # 10 research-grade BH presets from published papers
+│   ├── main.tsx              # Entry point
+│   ├── index.css             # Global styles + Tailwind imports
+│   ├── neuralWorker.ts       # Web Worker — neural network calculations
+│   ├── physicsWorker.ts      # Web Worker — geodesic physics calculations
+│   └── navigator/            # Black Hole Navigator components (from navigator ZIP)
+│       ├── utils.ts          # cn() helper + COLORS constants
+│       ├── use-mobile.ts     # Responsive hook
+│       ├── ligo-events.ts    # GWTC-3 catalog + strain waveform generator
+│       ├── featured-stars.ts # ~27 curated stars + compact objects (NASA/ESA/EHT)
+│       ├── navigator-shader.ts # GPU fragment shader: Schwarzschild+Kerr+NFW
+│       ├── BlackHoleQuad.tsx # Three.js fullscreen shader quad component
+│       ├── BlackHoleViewport.tsx # Orbit-controlled BH viewport wrapper
+│       ├── SpacetimeGrid.tsx # 3D Flamm paraboloid + autonomous orbiting stars
+│       ├── NeuralTapestry.tsx # 30k-node instanced parameter mesh
+│       ├── MathGraphs.tsx    # V_eff, T(r), redshift, NFW DM charts (Recharts)
+│       ├── LigoWaveform.tsx  # LIGO event selector + strain h(t) chart
+│       ├── AccretionDiskStudy.tsx # Thin-disk 3D + Shakura-Sunyaev profiles
+│       ├── GalacticPlane.tsx # N-body galaxy formation with timeline scrubber
+│       ├── StarDetails.tsx   # Star catalog browser with Gaia/EHT/Chandra data
+│       ├── DataMatrix.tsx    # Live metric tensor + parameter display
+│       ├── IOMeshOverlay.tsx # I/O parameter mesh topology visualization
+│       └── physics-constants.json # Physical constants reference
 ├── index.html
 ├── vite.config.ts
 ├── package.json
@@ -32,45 +51,27 @@ A high-performance, research-grade React web application featuring real-time bla
 
 ## Key Features
 
-### Physics Parameters (~40 total)
-Core: mass, spin, charge, distance, frame drag, dark matter, 4D offset, coupling, aberration, ray depth
+### Main Simulator (App.tsx)
+- Real-time WebGL2 Kerr/Schwarzschild/Kerr-Newman ray-marching
+- Accretion disk with Shakura-Sunyaev temperature profile
+- Tidal disruption events (TDE mode)
+- ~25 advanced physics parameters (Eddington ratio, jet Lorentz factor, M-σ, etc.)
+- 10 research-grade presets (Sgr A*, M87*, GW150914 remnant, etc.)
+- 4D spacetime panel (tesseract, Penrose diagram, spacetime ripple modes)
 
-Advanced (from published papers):
-- **Accretion disc**: Eddington ratio λ, α-viscosity (Shakura-Sunyaev), H/R aspect ratio, mass outflow rate, disk wind speed, TDE impact parameter β
-- **Relativistic jet**: Bulk Lorentz factor Γ, jet opening angle, AGN mechanical feedback efficiency ε
-- **Host galaxy**: Stellar velocity dispersion σ, M-σ power-law index α (Kormendy & Ho 2013), NFW concentration parameter, hot gas halo temperature
-- **Binary merger**: Mass ratio q, chirp mass ℳ, orbital eccentricity, final merger spin a_f (Bowen-York)
-- **S-star orbits**: S2 eccentricity (GRAVITY 2018 = 0.8843), orbital period (16.0455 yr)
+### Navigator Panel (NavigatorPanel.tsx + navigator/)
+Accessible via "Navigator" button in header — 10 views:
+1. **Spacetime Grid** — 3D Flamm paraboloid + 400 autonomous Keplerian orbiting stars
+2. **BH Viewport** — Multi-mode navigator shader (full, geodesic heat, grid overlay, DM-only)
+3. **LIGO Events** — GWTC-3 catalog with post-Newtonian strain h(t) reconstruction
+4. **Accretion Disk** — 3D thin-disk Three.js + T(r)/F(r)/v(r)/λ(r) Recharts profiles
+5. **Galactic Plane** — N-body galaxy simulation (spiral/elliptical/irregular/colliding) + timeline
+6. **Neural Tapestry** — 30k-node instanced mesh with broken-connection detection
+7. **Math Graphs** — Live V_eff(r), T(r), z(r), M_DM(r) physics graphs
+8. **Star Catalog** — 27 stars/compact objects (Sgr A*, M87*, Crab Pulsar, TRAPPIST-1, etc.)
+9. **Data Matrix** — Live Schwarzschild metric tensor g_μν + derived scalars
+10. **I/O Mesh** — Parameter topology visualization (25 inputs → hidden → 4 outputs)
 
-### Research Presets (10 objects)
-All parameters matched to published observations:
-1. Sagittarius A* — EHT 2022, GRAVITY 2019
-2. M87* — Event Horizon Telescope 2019
-3. Cygnus X-1 — Miller-Jones et al. 2021, Science
-4. GRS 1915+105 — McClintock et al. 2006, ApJ
-5. AT2018dyb TDE — Leloudas et al. 2019, A&A
-6. GW150914 Merger — LIGO/Virgo 2016, PRL
-7. NGC 4889 BCG — McConnell et al. 2011, Nature
-8. Sgr A* S2 Orbit — GRAVITY Collab. 2018, A&A
-9. TON 618 Quasar — Shemmer et al. 2004, ApJ
-10. Radio AGN Jet — Fabian 2012, ARA&A
-
-### 4D Floating Window (FourDPanel)
-Draggable, minimizable floating panel with three visualization modes:
-- **4D Tesseract**: Rotating hypercube with Schwarzschild-warped 4th dimension
-- **Spacetime Grid**: Kerr curvature tensor projected to XY plane
-- **Penrose Diagram**: Conformal causal diagram with worldline and null geodesics
-
-### 3D Mesh Debug (DAT tab)
-Neural net graph view + 3D perspective-projected mesh debug of the simulation network.
-
-## Environment Variables
-- `GEMINI_API_KEY`: Required for AI features. Set in Replit Secrets.
-
-## Development
-- **Dev server**: `npm run dev` (port 5000)
-- **Build**: `npm run build`
-
-## Replit Configuration
-- Dev server runs on `0.0.0.0:5000` with `allowedHosts: true` for proxy support
-- Deployment configured as static site (`npm run build` → `dist/`)
+## Dev Server
+- Runs on port 5000 via `npm run dev`
+- Workflow: "Start application"
